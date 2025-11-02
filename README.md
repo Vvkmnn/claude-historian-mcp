@@ -2,6 +2,10 @@
 
 ![claude-historian](demo.gif)
 
+<a href="https://glama.ai/mcp/servers/@Vvkmnn/claude-historian">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@Vvkmnn/claude-historian/badge" alt="Claude Historian MCP server" />
+</a>
+
 A Model Context Protocol (MCP) server for searching your Claude Code conversation history. Find past solutions, track file changes, and learn from previous work.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
