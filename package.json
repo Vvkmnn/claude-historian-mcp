@@ -29,7 +29,7 @@
     "npm": ">=10.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.24.3"
   },
   "optionalDependencies": {
     "level": "^10.0.0"
