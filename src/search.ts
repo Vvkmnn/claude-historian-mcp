@@ -1,5 +1,12 @@
 import { ConversationParser } from './parser.js';
-import { CompactMessage, SearchResult, FileContext, ErrorSolution, ToolPattern, PlanResult } from './types.js';
+import {
+  CompactMessage,
+  SearchResult,
+  FileContext,
+  ErrorSolution,
+  ToolPattern,
+  PlanResult,
+} from './types.js';
 import {
   findProjectDirectories,
   findJsonlFiles,
@@ -29,7 +36,7 @@ export class HistorySearchEngine {
     limit: number = 15 // Default to 15 for better coverage
   ): Promise<SearchResult> {
     const startTime = Date.now();
-    
+
     // Intelligent query analysis and classification
     const queryAnalysis = this.analyzeQueryIntent(query);
     const requestedLimit = limit; // Use exactly what user requested
@@ -57,21 +64,25 @@ export class HistorySearchEngine {
 
   private analyzeQueryIntent(query: string): any {
     const lowerQuery = query.toLowerCase();
-    
+
     return {
       type: this.classifyQueryType(query),
       urgency: lowerQuery.includes('error') || lowerQuery.includes('failed') ? 'high' : 'medium',
       scope: lowerQuery.includes('project') || lowerQuery.includes('all') ? 'broad' : 'focused',
-      expectsCode: lowerQuery.includes('function') || lowerQuery.includes('implement') || lowerQuery.includes('code'),
-      expectsSolution: lowerQuery.includes('how') || lowerQuery.includes('fix') || lowerQuery.includes('solve'),
-      keywords: lowerQuery.split(/\s+/).filter(w => w.length > 2),
-      semanticBoosts: this.getSemanticBoosts(lowerQuery)
+      expectsCode:
+        lowerQuery.includes('function') ||
+        lowerQuery.includes('implement') ||
+        lowerQuery.includes('code'),
+      expectsSolution:
+        lowerQuery.includes('how') || lowerQuery.includes('fix') || lowerQuery.includes('solve'),
+      keywords: lowerQuery.split(/\s+/).filter((w) => w.length > 2),
+      semanticBoosts: this.getSemanticBoosts(lowerQuery),
     };
   }
 
   private getSemanticBoosts(query: string): Record<string, number> {
     const boosts: Record<string, number> = {};
-    
+
     // Technical content gets massive boosts
     if (query.includes('error')) boosts.errorResolution = 3.0;
     if (query.includes('implement')) boosts.implementation = 2.5;
@@ -79,7 +90,7 @@ export class HistorySearchEngine {
     if (query.includes('fix')) boosts.solutions = 2.8;
     if (query.includes('file')) boosts.fileOperations = 2.0;
     if (query.includes('tool')) boosts.toolUsage = 2.2;
-    
+
     return boosts;
   }
 
@@ -92,10 +103,10 @@ export class HistorySearchEngine {
     timeframe?: string
   ): Promise<SearchResult> {
     const timeFilter = getTimeRangeFilter(timeframe);
-    
+
     try {
       const projectDirs = await findProjectDirectories();
-      
+
       // Pre-validate: Don't waste time on queries that won't return value
       if (query.length < 3) {
         return {
@@ -105,35 +116,31 @@ export class HistorySearchEngine {
           executionTime: Date.now() - startTime,
         };
       }
-      
+
       // Smart project selection - focus on most relevant projects first
       const maxProjects = Math.min(projectDirs.length, Math.max(8, Math.ceil(limit / 2)));
-      const targetDirs = projectFilter 
-        ? projectDirs.filter(dir => dir.includes(projectFilter))
+      const targetDirs = projectFilter
+        ? projectDirs.filter((dir) => dir.includes(projectFilter))
         : projectDirs.slice(0, maxProjects);
 
       // Parallel processing with quality threshold
       const candidates = await this.gatherRelevantCandidates(
-        targetDirs, 
-        query, 
-        analysis, 
-        timeFilter, 
+        targetDirs,
+        query,
+        analysis,
+        timeFilter,
         limit * 2 // Gather 2x but with higher quality threshold
       );
 
       // Intelligent relevance scoring and selection with quality guarantee
-      const topRelevant = this.selectTopRelevantResults(
-        candidates,
-        query,
-        analysis,
-        limit
-      );
+      const topRelevant = this.selectTopRelevantResults(candidates, query, analysis, limit);
 
       // Quality gate: Only return results that meet minimum value threshold
-      const qualityResults = topRelevant.filter(msg =>
-        (msg.finalScore || msg.relevanceScore || 0) >= 1.5 && // Must be reasonably relevant (use finalScore with query boosting)
-        msg.content.length >= 40 && // Must have substantial content
-        !this.isLowValueContent(msg.content) // Must not be filler
+      const qualityResults = topRelevant.filter(
+        (msg) =>
+          (msg.finalScore || msg.relevanceScore || 0) >= 1.5 && // Must be reasonably relevant (use finalScore with query boosting)
+          msg.content.length >= 40 && // Must have substantial content
+          !this.isLowValueContent(msg.content) // Must not be filler
       );
 
       return {
@@ -156,7 +163,7 @@ export class HistorySearchEngine {
     targetCount: number
   ): Promise<CompactMessage[]> {
     const candidates: CompactMessage[] = [];
-    
+
     // Process projects in parallel with intelligent early stopping
     const projectResults = await Promise.allSettled(
       projectDirs.map(async (projectDir) => {
@@ -174,11 +181,11 @@ export class HistorySearchEngine {
     // Aggregate with aggressive noise filtering
     for (const result of projectResults) {
       if (result.status === 'fulfilled') {
-        const dirMessages = result.value.filter(msg => 
+        const dirMessages = result.value.filter((msg) =>
           this.isHighlyRelevant(msg, query, analysis)
         );
         candidates.push(...dirMessages);
-        
+
         // Early termination if we have enough high-quality candidates
         if (candidates.length >= targetCount) break;
       }
@@ -195,36 +202,36 @@ export class HistorySearchEngine {
     targetPerProject: number
   ): Promise<CompactMessage[]> {
     const messages: CompactMessage[] = [];
-    
+
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
-      
+
       // Process only most relevant files (max 4 per project)
       const priorityFiles = jsonlFiles.slice(0, Math.min(4, jsonlFiles.length));
-      
+
       for (const file of priorityFiles) {
         const fileMessages = await this.processJsonlFile(projectDir, file, query, timeFilter);
-        
+
         // Balanced filtering per file
         const relevant = fileMessages
-          .filter(msg => (msg.relevanceScore || 0) >= 1) // Lower threshold for usefulness
-          .filter(msg => this.matchesQueryIntent(msg, analysis))
+          .filter((msg) => (msg.relevanceScore || 0) >= 1) // Lower threshold for usefulness
+          .filter((msg) => this.matchesQueryIntent(msg, analysis))
           .slice(0, Math.ceil(targetPerProject / priorityFiles.length));
-        
+
         messages.push(...relevant);
-        
+
         if (messages.length >= targetPerProject) break;
       }
     } catch (error) {
       console.error(`Focused processing error for ${projectDir}:`, error);
     }
-    
+
     return messages;
   }
 
   private isHighlyRelevant(message: CompactMessage, query: string, analysis: any): boolean {
     const content = message.content.toLowerCase();
-    
+
     // Eliminate all noise patterns aggressively - expanded to catch Claude system messages
     const noisePatterns = [
       'this session is being continued',
@@ -246,41 +253,55 @@ export class HistorySearchEngine {
       'ready to help you',
       'what would you like me to',
       'how can i assist',
-      'i understand that i\'m',
+      "i understand that i'm",
     ];
 
-    if (noisePatterns.some(pattern => content.includes(pattern)) || content.length < 40) {
+    if (noisePatterns.some((pattern) => content.includes(pattern)) || content.length < 40) {
       return false;
     }
 
     // Must have reasonable relevance score - lowered from 1 to 0.3 to allow more candidates through
     if ((message.relevanceScore || 0) < 0.3) return false;
-    
+
     // Must match query intent
     return this.matchesQueryIntent(message, analysis);
   }
 
   private matchesQueryIntent(message: CompactMessage, analysis: any): boolean {
     const content = message.content.toLowerCase();
-    
+
     // Intent-based matching
     switch (analysis.type) {
       case 'error':
-        return content.includes('error') || content.includes('fix') || content.includes('solution') ||
-               (message.context?.errorPatterns?.length || 0) > 0;
-      
+        return (
+          content.includes('error') ||
+          content.includes('fix') ||
+          content.includes('solution') ||
+          (message.context?.errorPatterns?.length || 0) > 0
+        );
+
       case 'implementation':
-        return content.includes('implement') || content.includes('create') || content.includes('function') ||
-               (message.context?.codeSnippets?.length || 0) > 0;
-      
+        return (
+          content.includes('implement') ||
+          content.includes('create') ||
+          content.includes('function') ||
+          (message.context?.codeSnippets?.length || 0) > 0
+        );
+
       case 'analysis':
-        return content.includes('analyze') || content.includes('understand') || content.includes('explain') ||
-               message.type === 'assistant' && content.length > 100;
-      
+        return (
+          content.includes('analyze') ||
+          content.includes('understand') ||
+          content.includes('explain') ||
+          (message.type === 'assistant' && content.length > 100)
+        );
+
       default:
         // General: must have tool usage or be substantial assistant response
-        return (message.context?.toolsUsed?.length || 0) > 0 || 
-               (message.type === 'assistant' && content.length > 80);
+        return (
+          (message.context?.toolsUsed?.length || 0) > 0 ||
+          (message.type === 'assistant' && content.length > 80)
+        );
     }
   }
 
@@ -291,10 +312,13 @@ export class HistorySearchEngine {
     limit: number
   ): CompactMessage[] {
     // Enhanced scoring with semantic boosts
-    const scoredCandidates = candidates.map(msg => {
+    const scoredCandidates = candidates.map((msg) => {
       let score = msg.relevanceScore || 0;
       const contentLower = msg.content.toLowerCase();
-      const queryTerms = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+      const queryTerms = query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2);
 
       // Heavy multiplicative boost for exact query term matches
       let exactMatchBoost = 1.0;
@@ -307,14 +331,14 @@ export class HistorySearchEngine {
 
       // Penalize results that don't match ANY query terms - additive penalty instead of multiplicative
       if (exactMatchBoost === 1.0 && queryTerms.length > 0) {
-        score -= 2;  // Additive penalty, not multiplicative
-        if (score < 0.5) score = 0.5;  // Floor at 0.5 to allow some through
+        score -= 2; // Additive penalty, not multiplicative
+        if (score < 0.5) score = 0.5; // Floor at 0.5 to allow some through
       }
 
       // Apply semantic boosts from analysis
       Object.entries(analysis.semanticBoosts).forEach(([type, boost]) => {
         if (this.messageMatchesSemanticType(msg, type)) {
-          score *= (boost as number);
+          score *= boost as number;
         }
       });
 
@@ -328,31 +352,41 @@ export class HistorySearchEngine {
 
       return { ...msg, finalScore: score };
     });
-    
+
     // Sort by final score and deduplicate
-    const sorted = scoredCandidates
-      .sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
-    
+    const sorted = scoredCandidates.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
+
     const deduped = this.intelligentDeduplicate(sorted);
-    
+
     return deduped.slice(0, limit);
   }
 
   private messageMatchesSemanticType(message: CompactMessage, type: string): boolean {
     const content = message.content.toLowerCase();
-    
+
     switch (type) {
       case 'errorResolution':
-        return content.includes('error') || content.includes('exception') || 
-               (message.context?.errorPatterns?.length || 0) > 0;
+        return (
+          content.includes('error') ||
+          content.includes('exception') ||
+          (message.context?.errorPatterns?.length || 0) > 0
+        );
       case 'implementation':
-        return content.includes('function') || content.includes('implement') ||
-               (message.context?.codeSnippets?.length || 0) > 0;
+        return (
+          content.includes('function') ||
+          content.includes('implement') ||
+          (message.context?.codeSnippets?.length || 0) > 0
+        );
       case 'optimization':
-        return content.includes('optimize') || content.includes('performance') ||
-               content.includes('faster');
+        return (
+          content.includes('optimize') ||
+          content.includes('performance') ||
+          content.includes('faster')
+        );
       case 'solutions':
-        return content.includes('solution') || content.includes('fix') || content.includes('resolve');
+        return (
+          content.includes('solution') || content.includes('fix') || content.includes('resolve')
+        );
       case 'fileOperations':
         return (message.context?.filesReferenced?.length || 0) > 0;
       case 'toolUsage':
@@ -364,11 +398,11 @@ export class HistorySearchEngine {
 
   private intelligentDeduplicate(messages: any[]): CompactMessage[] {
     const seen = new Map<string, CompactMessage>();
-    
+
     for (const message of messages) {
       // Intelligent deduplication using content signature
       const signature = this.createIntelligentSignature(message);
-      
+
       if (!seen.has(signature)) {
         seen.set(signature, message);
       } else {
@@ -379,7 +413,7 @@ export class HistorySearchEngine {
         }
       }
     }
-    
+
     return Array.from(seen.values());
   }
 
@@ -391,10 +425,10 @@ export class HistorySearchEngine {
       .replace(/["']/g, '')
       .replace(/\s+/g, ' ')
       .substring(0, 80);
-    
+
     const tools = (message.context?.toolsUsed || []).sort().join('|');
     const files = (message.context?.filesReferenced || []).length > 0 ? 'files' : 'nofiles';
-    
+
     return `${message.type}:${tools}:${files}:${contentHash}`;
   }
 
@@ -403,25 +437,25 @@ export class HistorySearchEngine {
     query: string,
     timeFilter: ((timestamp: string) => boolean) | undefined,
     targetLimit: number
-  ): Promise<{ summary: CompactMessage[], regular: CompactMessage[] }> {
+  ): Promise<{ summary: CompactMessage[]; regular: CompactMessage[] }> {
     const summaryMessages: CompactMessage[] = [];
     const regularMessages: CompactMessage[] = [];
 
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
-      
+
       // Parallel processing of files within the project
       const fileResults = await Promise.allSettled(
-        jsonlFiles.slice(0, Math.min(jsonlFiles.length, 8)).map(file => 
-          this.processJsonlFile(projectDir, file, query, timeFilter)
-        )
+        jsonlFiles
+          .slice(0, Math.min(jsonlFiles.length, 8))
+          .map((file) => this.processJsonlFile(projectDir, file, query, timeFilter))
       );
 
       // Aggregate results from all files
       for (const result of fileResults) {
         if (result.status === 'fulfilled') {
           const messages = result.value;
-          
+
           // Fast pre-filter: only process messages with minimum relevance
           const qualifyingMessages = messages.filter((msg) => (msg.relevanceScore || 0) >= 1);
 
@@ -462,9 +496,10 @@ export class HistorySearchEngine {
 
     // Parse file
     const messages = await this.parser.parseJsonlFile(projectDir, file, query, timeFilter);
-    
+
     // Enhanced caching with increased size limit
-    if (this.messageCache.size < 500) { // Increased from 100
+    if (this.messageCache.size < 500) {
+      // Increased from 100
       this.messageCache.set(cacheKey, messages);
     } else if (messages.some((m) => (m.relevanceScore || 0) > 8)) {
       // Replace least valuable cache entry with high-value content
@@ -501,7 +536,7 @@ export class HistorySearchEngine {
       .sort((a, b) => {
         const relevanceDiff = (b.relevanceScore || 0) - (a.relevanceScore || 0);
         if (Math.abs(relevanceDiff) > 1) return relevanceDiff;
-        
+
         // Secondary sort by recency for similar relevance
         return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
       })
@@ -510,7 +545,7 @@ export class HistorySearchEngine {
     // Combine and deduplicate
     const combined = [...sortedSummaries, ...sortedRegular];
     const deduped = this.deduplicateMessages(combined);
-    
+
     return deduped.slice(0, limit);
   }
 
@@ -521,7 +556,7 @@ export class HistorySearchEngine {
     for (const message of messages) {
       // Create a simple content hash for deduplication
       const contentHash = message.content.substring(0, 100).toLowerCase().replace(/\s+/g, '');
-      
+
       if (!seen.has(contentHash)) {
         seen.add(contentHash);
         unique.push(message);
@@ -563,10 +598,12 @@ export class HistorySearchEngine {
     if (message.context?.toolsUsed && (message.context.toolsUsed.length || 0) > 0) return true;
 
     // Include error resolution messages
-    if (message.context?.errorPatterns && (message.context.errorPatterns.length || 0) > 0) return true;
+    if (message.context?.errorPatterns && (message.context.errorPatterns.length || 0) > 0)
+      return true;
 
     // Include file operation messages
-    if (message.context?.filesReferenced && (message.context.filesReferenced.length || 0) > 0) return true;
+    if (message.context?.filesReferenced && (message.context.filesReferenced.length || 0) > 0)
+      return true;
 
     // Include assistant messages with substantial solutions
     if (message.type === 'assistant' && content.length > 200 && relevanceScore > 0) return true;
@@ -700,7 +737,7 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
-      
+
       // COMPREHENSIVE: Process more projects to match GLOBAL's reach
       const limitedDirs = projectDirs.slice(0, 15); // Increased significantly to match GLOBAL scope
 
@@ -708,34 +745,33 @@ export class HistorySearchEngine {
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
-          
+
           // COMPREHENSIVE: Process more files to match GLOBAL's reach
           const limitedFiles = jsonlFiles.slice(0, 10); // Increased to match GLOBAL scope
-          
+
           const fileResults = await Promise.allSettled(
             limitedFiles.map(async (file) => {
               const messages = await this.parser.parseJsonlFile(projectDir, file);
-              
 
               const fileMessages = messages.filter((msg) => {
                 // ENHANCED file matching logic like GLOBAL with more patterns
-                const hasFileRef = msg.context?.filesReferenced?.some(
-                  (ref) => {
-                    const refLower = ref.toLowerCase();
-                    const pathLower = filePath.toLowerCase();
-                    // More comprehensive matching patterns
-                    return refLower.includes(pathLower) || 
-                           pathLower.includes(refLower) ||
-                           refLower.endsWith('/' + pathLower) ||
-                           pathLower.endsWith('/' + refLower) ||
-                           refLower.split('/').pop() === pathLower ||
-                           pathLower.split('/').pop() === refLower ||
-                           refLower === pathLower ||
-                           refLower.includes(pathLower.replace(/\\/g, '/')) ||
-                           refLower.includes(pathLower.replace(/\//g, '\\'));
-                  }
-                );
-                
+                const hasFileRef = msg.context?.filesReferenced?.some((ref) => {
+                  const refLower = ref.toLowerCase();
+                  const pathLower = filePath.toLowerCase();
+                  // More comprehensive matching patterns
+                  return (
+                    refLower.includes(pathLower) ||
+                    pathLower.includes(refLower) ||
+                    refLower.endsWith('/' + pathLower) ||
+                    pathLower.endsWith('/' + refLower) ||
+                    refLower.split('/').pop() === pathLower ||
+                    pathLower.split('/').pop() === refLower ||
+                    refLower === pathLower ||
+                    refLower.includes(pathLower.replace(/\\/g, '/')) ||
+                    refLower.includes(pathLower.replace(/\//g, '\\'))
+                  );
+                });
+
                 // Enhanced content matching with case variations and path separators
                 const contentLower = msg.content.toLowerCase();
                 const pathVariations = [
@@ -743,31 +779,33 @@ export class HistorySearchEngine {
                   filePath.toLowerCase().replace(/\\/g, '/'),
                   filePath.toLowerCase().replace(/\//g, '\\'),
                   filePath.toLowerCase().split('/').pop() || '',
-                  filePath.toLowerCase().split('\\').pop() || ''
+                  filePath.toLowerCase().split('\\').pop() || '',
                 ];
-                
-                const hasContentRef = pathVariations.some(variation => 
-                  variation.length > 0 && contentLower.includes(variation)
+
+                const hasContentRef = pathVariations.some(
+                  (variation) => variation.length > 0 && contentLower.includes(variation)
                 );
-                
+
                 // Enhanced git pattern matching
-                const hasGitRef = /(?:modified|added|deleted|new file|renamed|M\s+|A\s+|D\s+)[\s:]*[^\n]*/.test(msg.content) && 
-                                  pathVariations.some(variation => 
-                                    variation.length > 0 && contentLower.includes(variation)
-                                  );
-                                  
-                
+                const hasGitRef =
+                  /(?:modified|added|deleted|new file|renamed|M\s+|A\s+|D\s+)[\s:]*[^\n]*/.test(
+                    msg.content
+                  ) &&
+                  pathVariations.some(
+                    (variation) => variation.length > 0 && contentLower.includes(variation)
+                  );
+
                 return hasFileRef || hasContentRef || hasGitRef;
               });
 
               if (fileMessages.length > 0) {
                 // Claude-optimized filtering - preserve valuable context
-                const cleanFileMessages = fileMessages.filter(msg => {
+                const cleanFileMessages = fileMessages.filter((msg) => {
                   return msg.content.length > 15 && !this.isLowValueContent(msg.content);
                 });
-                
+
                 const dedupedMessages = SearchHelpers.deduplicateByContent(cleanFileMessages);
-                
+
                 if (dedupedMessages.length > 0) {
                   // Group by operation type (heuristic)
                   const operationType = SearchHelpers.inferOperationType(dedupedMessages);
@@ -783,7 +821,7 @@ export class HistorySearchEngine {
               return null;
             })
           );
-          
+
           // Collect successful file results
           const validContexts: FileContext[] = [];
           for (const result of fileResults) {
@@ -791,7 +829,7 @@ export class HistorySearchEngine {
               validContexts.push(result.value);
             }
           }
-          
+
           return validContexts;
         })
       );
@@ -817,13 +855,13 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
-      
+
       // BALANCED: More projects for better coverage, early termination for speed
       const limitedDirs = projectDirs.slice(0, 8);
 
       for (const projectDir of limitedDirs) {
         const jsonlFiles = await findJsonlFiles(projectDir);
-        
+
         // BALANCED: More files per project for better context
         const limitedFiles = jsonlFiles.slice(0, 5);
 
@@ -832,10 +870,11 @@ export class HistorySearchEngine {
 
           // Find user messages (queries) that are similar and valuable
           const userQueries = messages.filter(
-            (msg) => msg.type === 'user' && 
-                     msg.content.length > 15 && 
-                     msg.content.length < 800 && 
-                     !this.isLowValueContent(msg.content) // Only quality queries
+            (msg) =>
+              msg.type === 'user' &&
+              msg.content.length > 15 &&
+              msg.content.length < 800 &&
+              !this.isLowValueContent(msg.content) // Only quality queries
           );
 
           for (let i = 0; i < userQueries.length; i++) {
@@ -846,7 +885,7 @@ export class HistorySearchEngine {
               query.relevanceScore = similarity;
 
               // Find the answer - look for next assistant message in original array
-              const queryIndex = messages.findIndex(m => m.uuid === query.uuid);
+              const queryIndex = messages.findIndex((m) => m.uuid === query.uuid);
               if (queryIndex >= 0) {
                 // Look ahead for assistant response (may not be immediately next)
                 for (let j = queryIndex + 1; j < Math.min(queryIndex + 5, messages.length); j++) {
@@ -862,20 +901,20 @@ export class HistorySearchEngine {
               allMessages.push(query);
             }
           }
-          
+
           // SPEED FIX: Early termination when we have enough candidates
           if (allMessages.length >= limit * 4) break;
         }
-        
+
         if (allMessages.length >= limit * 4) break;
       }
 
       // Quality filter and return only if we have valuable results
       const qualityResults = allMessages
-        .filter(msg => !this.isLowValueContent(msg.content))
+        .filter((msg) => !this.isLowValueContent(msg.content))
         .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
         .slice(0, limit);
-        
+
       return qualityResults;
     } catch (error) {
       console.error('Similar query search error:', error);
@@ -897,12 +936,12 @@ export class HistorySearchEngine {
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
-          
-          // BALANCED: More files for better coverage 
+
+          // BALANCED: More files for better coverage
           const limitedFiles = jsonlFiles.slice(0, 6);
-          
+
           const projectErrorMap = new Map<string, CompactMessage[]>();
-          
+
           // PARALLEL: Process files within project simultaneously
           const fileResults = await Promise.allSettled(
             limitedFiles.map(async (file) => {
@@ -914,10 +953,12 @@ export class HistorySearchEngine {
 
                 // More precise error matching - require significant overlap
                 const lowerPattern = errorPattern.toLowerCase();
-                const patternWords = lowerPattern.split(/\s+/).filter(w => w.length > 2);
+                const patternWords = lowerPattern.split(/\s+/).filter((w) => w.length > 2);
 
                 // Extract error type if present (TypeError, SyntaxError, etc.)
-                const errorType = lowerPattern.match(/(typeerror|syntaxerror|referenceerror|rangeerror|error)/)?.[0];
+                const errorType = lowerPattern.match(
+                  /(typeerror|syntaxerror|referenceerror|rangeerror|error)/
+                )?.[0];
 
                 const hasMatchingError = current.context?.errorPatterns?.some((err) => {
                   const lowerErr = err.toLowerCase();
@@ -929,7 +970,7 @@ export class HistorySearchEngine {
 
                   // Require at least 3 pattern words to match, or full phrase match (stricter)
                   if (lowerErr.includes(lowerPattern)) return true;
-                  const matchCount = patternWords.filter(w => lowerErr.includes(w)).length;
+                  const matchCount = patternWords.filter((w) => lowerErr.includes(w)).length;
                   return matchCount >= Math.min(3, patternWords.length);
                 });
 
@@ -938,14 +979,18 @@ export class HistorySearchEngine {
 
                 // Filter out meta-content (plans, benchmarks, discussions)
                 if (
-                  (hasMatchingError || SearchHelpers.hasErrorInContent(current.content, errorPattern)) &&
+                  (hasMatchingError ||
+                    SearchHelpers.hasErrorInContent(current.content, errorPattern)) &&
                   isActualErrorContent &&
                   !this.isMetaErrorContent(current.content)
                 ) {
                   // Use the most relevant error pattern as key
-                  const matchedError = current.context?.errorPatterns?.find(err =>
-                    err.toLowerCase().includes(lowerPattern)
-                  ) || current.context?.errorPatterns?.[0] || errorPattern;
+                  const matchedError =
+                    current.context?.errorPatterns?.find((err) =>
+                      err.toLowerCase().includes(lowerPattern)
+                    ) ||
+                    current.context?.errorPatterns?.[0] ||
+                    errorPattern;
                   const errorKey = matchedError;
 
                   if (!projectErrorMap.has(errorKey)) {
@@ -955,10 +1000,11 @@ export class HistorySearchEngine {
                   // Include the error message and the next few messages as potential solutions
                   const solutionMessages = messages
                     .slice(i, i + 8) // Get more context for better solutions (increased from 5 to 8)
-                    .filter((msg) =>
-                      msg.type === 'assistant' ||
-                      msg.type === 'tool_result' ||
-                      (msg.type === 'user' && msg.content.length < 200) // Include short user clarifications
+                    .filter(
+                      (msg) =>
+                        msg.type === 'assistant' ||
+                        msg.type === 'tool_result' ||
+                        (msg.type === 'user' && msg.content.length < 200) // Include short user clarifications
                     );
 
                   projectErrorMap.get(errorKey)!.push(...solutionMessages);
@@ -966,7 +1012,7 @@ export class HistorySearchEngine {
               }
             })
           );
-          
+
           return projectErrorMap;
         })
       );
@@ -988,10 +1034,11 @@ export class HistorySearchEngine {
       for (const [pattern, msgs] of errorMap.entries()) {
         // Assistant responses following errors are solutions by context
         // Lower threshold from 50 to 20 chars for actionable short solutions
-        const qualitySolutions = msgs.filter(msg =>
-          msg.type === 'assistant' &&
-          !this.isLowValueContent(msg.content) &&
-          msg.content.length >= 20
+        const qualitySolutions = msgs.filter(
+          (msg) =>
+            msg.type === 'assistant' &&
+            !this.isLowValueContent(msg.content) &&
+            msg.content.length >= 20
         );
 
         if (qualitySolutions.length > 0) {
@@ -1020,17 +1067,27 @@ export class HistorySearchEngine {
       const limitedDirs = projectDirs.slice(0, 15);
 
       // Focus on core Claude Code tools that GLOBAL would recognize
-      const coreTools = new Set(['Edit', 'Read', 'Bash', 'Grep', 'Glob', 'Write', 'Task', 'MultiEdit', 'Notebook']);
+      const coreTools = new Set([
+        'Edit',
+        'Read',
+        'Bash',
+        'Grep',
+        'Glob',
+        'Write',
+        'Task',
+        'MultiEdit',
+        'Notebook',
+      ]);
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
           const limitedFiles = jsonlFiles.slice(0, 8);
-          
+
           const projectToolMap = new Map<string, CompactMessage[]>();
           const projectWorkflowMap = new Map<string, CompactMessage[]>();
-          
+
           // PARALLEL: Process files within project simultaneously
           const fileResults = await Promise.allSettled(
             limitedFiles.map(async (file) => {
@@ -1042,9 +1099,7 @@ export class HistorySearchEngine {
                   for (const tool of msg.context.toolsUsed) {
                     // If toolName specified, only track that tool
                     // Otherwise, track all core tools
-                    const shouldTrack = toolName
-                      ? tool === toolName
-                      : coreTools.has(tool);
+                    const shouldTrack = toolName ? tool === toolName : coreTools.has(tool);
 
                     if (shouldTrack) {
                       if (!projectToolMap.has(tool)) {
@@ -1068,8 +1123,8 @@ export class HistorySearchEngine {
                       // If toolName specified, workflow must involve that tool
                       // Otherwise, workflows between core tools
                       const shouldTrack = toolName
-                        ? (currentTool === toolName || nextTool === toolName)
-                        : (coreTools.has(currentTool) && coreTools.has(nextTool));
+                        ? currentTool === toolName || nextTool === toolName
+                        : coreTools.has(currentTool) && coreTools.has(nextTool);
 
                       if (shouldTrack) {
                         const workflowKey = `${currentTool} → ${nextTool}`;
@@ -1089,17 +1144,22 @@ export class HistorySearchEngine {
                 const second = messages[i + 1];
                 const third = messages[i + 2];
 
-                if (first.context?.toolsUsed?.length &&
-                    second.context?.toolsUsed?.length &&
-                    third.context?.toolsUsed?.length) {
-
+                if (
+                  first.context?.toolsUsed?.length &&
+                  second.context?.toolsUsed?.length &&
+                  third.context?.toolsUsed?.length
+                ) {
                   for (const firstTool of first.context.toolsUsed) {
                     for (const secondTool of second.context.toolsUsed) {
                       for (const thirdTool of third.context.toolsUsed) {
                         // If toolName specified, 3-step workflow must involve that tool
                         const shouldTrack = toolName
-                          ? (firstTool === toolName || secondTool === toolName || thirdTool === toolName)
-                          : (coreTools.has(firstTool) && coreTools.has(secondTool) && coreTools.has(thirdTool));
+                          ? firstTool === toolName ||
+                            secondTool === toolName ||
+                            thirdTool === toolName
+                          : coreTools.has(firstTool) &&
+                            coreTools.has(secondTool) &&
+                            coreTools.has(thirdTool);
 
                         if (shouldTrack) {
                           const workflowKey = `${firstTool} → ${secondTool} → ${thirdTool}`;
@@ -1115,7 +1175,7 @@ export class HistorySearchEngine {
               }
             })
           );
-          
+
           return { tools: projectToolMap, workflows: projectWorkflowMap };
         })
       );
@@ -1130,7 +1190,7 @@ export class HistorySearchEngine {
             }
             toolMap.get(tool)!.push(...messages);
           }
-          
+
           // Aggregate workflows
           for (const [workflow, messages] of result.value.workflows.entries()) {
             if (!workflowMap.has(workflow)) {
@@ -1142,18 +1202,20 @@ export class HistorySearchEngine {
       }
 
       const patterns: ToolPattern[] = [];
-      
+
       // ENHANCED: Create diverse patterns like GLOBAL showing related tools with workflows
       const toolFrequency = new Map<string, number>();
-      
+
       // First pass: Calculate tool frequencies for prioritization
       for (const [tool, messages] of toolMap.entries()) {
         toolFrequency.set(tool, messages.length);
       }
-      
+
       // Add diverse individual tool patterns (different tools, not just highest frequency)
       const usedTools = new Set<string>();
-      for (const [tool, messages] of Array.from(toolMap.entries()).sort((a, b) => b[1].length - a[1].length)) {
+      for (const [tool, messages] of Array.from(toolMap.entries()).sort(
+        (a, b) => b[1].length - a[1].length
+      )) {
         if (messages.length >= 1 && !usedTools.has(tool) && patterns.length < limit) {
           const uniqueMessages = SearchHelpers.deduplicateByContent(messages);
 
@@ -1165,7 +1227,10 @@ export class HistorySearchEngine {
             toolName: tool,
             successfulUsages: uniqueMessages.slice(0, 10),
             commonPatterns: actualPatterns.length > 0 ? actualPatterns : [`${tool} usage pattern`],
-            bestPractices: actualPractices.length > 0 ? actualPractices : [`${tool} used ${uniqueMessages.length}x successfully`],
+            bestPractices:
+              actualPractices.length > 0
+                ? actualPractices
+                : [`${tool} used ${uniqueMessages.length}x successfully`],
           });
           usedTools.add(tool);
         }
@@ -1178,7 +1243,7 @@ export class HistorySearchEngine {
           if (workflow.includes(tool) && workflow.includes('→') && messages.length >= 1) {
             const uniqueMessages = SearchHelpers.deduplicateByContent(messages);
             // Only add if not already added and we have space
-            if (!patterns.some(p => p.toolName === workflow) && patterns.length < limit) {
+            if (!patterns.some((p) => p.toolName === workflow) && patterns.length < limit) {
               patterns.push({
                 toolName: workflow,
                 successfulUsages: uniqueMessages.slice(0, 10),
@@ -1191,9 +1256,11 @@ export class HistorySearchEngine {
       }
 
       // If we still have space, add any remaining high-frequency workflows
-      for (const [workflow, messages] of Array.from(workflowMap.entries()).sort((a, b) => b[1].length - a[1].length)) {
+      for (const [workflow, messages] of Array.from(workflowMap.entries()).sort(
+        (a, b) => b[1].length - a[1].length
+      )) {
         if (workflow.includes('→') && messages.length >= 1 && patterns.length < limit) {
-          if (!patterns.some(p => p.toolName === workflow)) {
+          if (!patterns.some((p) => p.toolName === workflow)) {
             const uniqueMessages = SearchHelpers.deduplicateByContent(messages);
             patterns.push({
               toolName: workflow,
@@ -1210,12 +1277,12 @@ export class HistorySearchEngine {
         .sort((a, b) => {
           const aIsWorkflow = a.toolName.includes('→');
           const bIsWorkflow = b.toolName.includes('→');
-          
+
           // Individual tools first, then workflows, then by usage frequency
           if (aIsWorkflow !== bIsWorkflow) {
             return aIsWorkflow ? 1 : -1;
           }
-          
+
           return b.successfulUsages.length - a.successfulUsages.length;
         })
         .slice(0, limit);
@@ -1229,37 +1296,39 @@ export class HistorySearchEngine {
     try {
       // OPTIMIZED: Fast session discovery with parallel processing and early termination
       const projectDirs = await findProjectDirectories();
-      
+
       // PERFORMANCE: Limit projects and use parallel processing like GLOBAL
       const limitedDirs = projectDirs.slice(0, 10); // Limit projects for speed
-      
+
       // PARALLEL PROCESSING: Process projects concurrently
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
           const decodedPath = projectDir.replace(/-/g, '/');
           const projectName = decodedPath.split('/').pop() || 'unknown';
-          
+
           // PERFORMANCE: Limit files per project and process in parallel
           const limitedFiles = jsonlFiles.slice(0, 5); // Limit files for speed
-          
+
           const sessionResults = await Promise.allSettled(
             limitedFiles.map(async (file) => {
               const messages = await this.parser.parseJsonlFile(projectDir, file);
-              
+
               if (messages.length === 0) return null;
-              
+
               // Fast extraction of session data
-              const toolsUsed = [...new Set(messages.flatMap(m => m.context?.toolsUsed || []))];
+              const toolsUsed = [...new Set(messages.flatMap((m) => m.context?.toolsUsed || []))];
               const startTime = messages[0]?.timestamp;
               const endTime = messages[messages.length - 1]?.timestamp;
-              
+
               // Quick duration calculation
               let realDuration = 0;
               if (startTime && endTime) {
-                realDuration = Math.round((new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000);
+                realDuration = Math.round(
+                  (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000
+                );
               }
-              
+
               // Extract accomplishments - what was actually done
               const accomplishments = this.extractSessionAccomplishments(messages);
 
@@ -1273,21 +1342,21 @@ export class HistorySearchEngine {
                 end_time: endTime,
                 start_time: startTime,
                 tools_used: toolsUsed.slice(0, 5), // Limit tools for speed
-                assistant_count: messages.filter(m => m.type === 'assistant').length,
-                error_count: messages.filter(m => m.context?.errorPatterns?.length).length,
+                assistant_count: messages.filter((m) => m.type === 'assistant').length,
+                error_count: messages.filter((m) => m.context?.errorPatterns?.length).length,
                 session_quality: this.calculateSessionQuality(messages, toolsUsed, []),
-                accomplishments: accomplishments.slice(0, 3) // Top 3 accomplishments
+                accomplishments: accomplishments.slice(0, 3), // Top 3 accomplishments
               };
             })
           );
-          
+
           // Collect successful session results
           return sessionResults
-            .filter(result => result.status === 'fulfilled' && result.value)
-            .map(result => (result as PromiseFulfilledResult<any>).value);
+            .filter((result) => result.status === 'fulfilled' && result.value)
+            .map((result) => (result as PromiseFulfilledResult<any>).value);
         })
       );
-      
+
       // Flatten and collect all sessions
       const realSessions: any[] = [];
       for (const result of projectResults) {
@@ -1298,7 +1367,7 @@ export class HistorySearchEngine {
 
       // Sort by real end time
       return realSessions
-        .filter(s => s.end_time) // Only sessions with real timestamps
+        .filter((s) => s.end_time) // Only sessions with real timestamps
         .sort((a, b) => new Date(b.end_time).getTime() - new Date(a.end_time).getTime())
         .slice(0, limit);
     } catch (error) {
@@ -1307,8 +1376,12 @@ export class HistorySearchEngine {
     }
   }
 
-  private calculateSessionQuality(messages: any[], toolsUsed: string[], errorMessages: any[]): string {
-    const score = toolsUsed.length * 10 + (messages.length * 0.5) - (errorMessages.length * 5);
+  private calculateSessionQuality(
+    messages: any[],
+    toolsUsed: string[],
+    errorMessages: any[]
+  ): string {
+    const score = toolsUsed.length * 10 + messages.length * 0.5 - errorMessages.length * 5;
     if (score > 50) return 'excellent';
     if (score > 25) return 'good';
     if (score > 10) return 'average';
@@ -1363,13 +1436,17 @@ export class HistorySearchEngine {
       }
 
       // Explicit accomplishments - expanded patterns
-      const accomplishMatch = content.match(/(?:completed|implemented|fixed|created|built|added):?\s*([^.\n]{10,80})/i);
+      const accomplishMatch = content.match(
+        /(?:completed|implemented|fixed|created|built|added):?\s*([^.\n]{10,80})/i
+      );
       if (accomplishMatch) {
         accomplishments.push(accomplishMatch[1].trim());
         continue;
       }
 
-      const summaryMatch = content.match(/(?:here's what we accomplished|accomplishments):?\s*([^.\n]{10,100})/i);
+      const summaryMatch = content.match(
+        /(?:here's what we accomplished|accomplishments):?\s*([^.\n]{10,100})/i
+      );
       if (summaryMatch) {
         accomplishments.push(summaryMatch[1].trim());
         continue;
@@ -1400,11 +1477,14 @@ export class HistorySearchEngine {
     try {
       // Direct access to specific session file
       const jsonlFile = `${sessionId}.jsonl`;
-      
+
       const messages = await this.parser.parseJsonlFile(encodedProjectDir, jsonlFile);
       return messages;
     } catch (error) {
-      console.error(`Error getting session messages for ${sessionId} in ${encodedProjectDir}:`, error);
+      console.error(
+        `Error getting session messages for ${sessionId} in ${encodedProjectDir}:`,
+        error
+      );
       return [];
     }
   }
@@ -1420,42 +1500,44 @@ export class HistorySearchEngine {
       'much better! now i can see',
       /^(ok|yes|no|sure|thanks)\.?$/,
       /^error:\s*$/,
-      /^warning:\s*$/
+      /^warning:\s*$/,
     ];
 
-    return lowValuePatterns.some(pattern =>
-      typeof pattern === 'string' ? lowerContent.includes(pattern) : pattern.test(lowerContent)
-    ) || content.trim().length < 20;
+    return (
+      lowValuePatterns.some((pattern) =>
+        typeof pattern === 'string' ? lowerContent.includes(pattern) : pattern.test(lowerContent)
+      ) || content.trim().length < 20
+    );
   }
 
   // Helper to detect if content contains actual error (not just meta-discussion about errors)
   private isActualError(content: string): boolean {
     const errorIndicators = [
-      /error[:\s]/i,           // "error:" or "error "
-      /exception[:\s]/i,       // "exception:" or "exception "
-      /failed/i,               // any "failed" message
-      /\w+Error/i,             // TypeError, SyntaxError, etc.
-      /cannot\s+/i,            // "cannot read", "cannot find"
+      /error[:\s]/i, // "error:" or "error "
+      /exception[:\s]/i, // "exception:" or "exception "
+      /failed/i, // any "failed" message
+      /\w+Error/i, // TypeError, SyntaxError, etc.
+      /cannot\s+/i, // "cannot read", "cannot find"
       /undefined\s+is\s+not/i, // common JS error
-      /not\s+found/i,          // module not found, file not found
-      /invalid/i,              // invalid argument, invalid syntax
-      /stack trace/i,          // stack trace
-      /at\s+\w+\s+\([^)]+:\d+:\d+\)/ // Stack trace line
+      /not\s+found/i, // module not found, file not found
+      /invalid/i, // invalid argument, invalid syntax
+      /stack trace/i, // stack trace
+      /at\s+\w+\s+\([^)]+:\d+:\d+\)/, // Stack trace line
     ];
-    return errorIndicators.some(pattern => pattern.test(content));
+    return errorIndicators.some((pattern) => pattern.test(content));
   }
 
   // Filter meta-content about errors (detects plans/discussions vs actual solutions)
   private isMetaErrorContent(content: string): boolean {
     const metaIndicators = [
-      /\d+\/\d+.*(?:pass|fail|queries|results)/i,  // Score patterns like "2/3 pass"
-      /(?:test|benchmark|verify).*(?:error|solution)/i,  // Testing discussions
-      /(?:plan|design|implement).*(?:error handling|solution)/i,  // Planning discussions
-      /root\s+cause.*:/i,         // Analysis text
-      /(?:⚠️|✅|❌|🔴|🟢)/,       // Status emojis (any documentation/planning)
-      /\|\s*(?:tool|status|issue)/i,  // Markdown tables about tools/status
+      /\d+\/\d+.*(?:pass|fail|queries|results)/i, // Score patterns like "2/3 pass"
+      /(?:test|benchmark|verify).*(?:error|solution)/i, // Testing discussions
+      /(?:plan|design|implement).*(?:error handling|solution)/i, // Planning discussions
+      /root\s+cause.*:/i, // Analysis text
+      /(?:⚠️|✅|❌|🔴|🟢)/, // Status emojis (any documentation/planning)
+      /\|\s*(?:tool|status|issue)/i, // Markdown tables about tools/status
     ];
-    return metaIndicators.some(p => p.test(content));
+    return metaIndicators.some((p) => p.test(content));
   }
 
   // Extract actual tool patterns from message content
@@ -1476,9 +1558,12 @@ export class HistorySearchEngine {
       const content = msg.content;
 
       // SECONDARY: Look for tool usage descriptions in content
-      const toolMentionMatch = content.match(new RegExp(
-        `(?:use|using|called?)\\s+(?:the\\s+)?${toolName}(?:\\s+tool)?\\s+(?:to|on|for)\\s+([^.\\n]{10,60})`, 'i'
-      ));
+      const toolMentionMatch = content.match(
+        new RegExp(
+          `(?:use|using|called?)\\s+(?:the\\s+)?${toolName}(?:\\s+tool)?\\s+(?:to|on|for)\\s+([^.\\n]{10,60})`,
+          'i'
+        )
+      );
       if (toolMentionMatch) {
         patterns.push(`${toolName}: ${toolMentionMatch[1].trim()}`);
       }
@@ -1509,7 +1594,7 @@ export class HistorySearchEngine {
       }
 
       // Extract file types
-      msg.context?.filesReferenced?.forEach(file => {
+      msg.context?.filesReferenced?.forEach((file) => {
         const ext = file.match(/\.(\w+)$/)?.[1];
         if (ext) fileTypes.add(ext);
       });
@@ -1581,7 +1666,7 @@ export class HistorySearchEngine {
 
       // Filter by relevance and sort
       return plans
-        .filter(p => p.relevanceScore > 0)
+        .filter((p) => p.relevanceScore > 0)
         .sort((a, b) => b.relevanceScore - a.relevanceScore)
         .slice(0, limit);
     } catch (error) {
@@ -1599,7 +1684,7 @@ export class HistorySearchEngine {
   private extractPlanSections(content: string): string[] {
     // Extract H2 headings
     const matches = content.matchAll(/^##\s+(.+)$/gm);
-    return Array.from(matches, m => m[1].trim());
+    return Array.from(matches, (m) => m[1].trim());
   }
 
   private extractFileReferences(content: string): string[] {
@@ -1623,9 +1708,14 @@ export class HistorySearchEngine {
     return Array.from(files).slice(0, 20);
   }
 
-  private calculatePlanRelevance(query: string, title: string | null, sections: string[], content: string): number {
+  private calculatePlanRelevance(
+    query: string,
+    title: string | null,
+    sections: string[],
+    content: string
+  ): number {
     const lowerQuery = query.toLowerCase();
-    const queryTerms = lowerQuery.split(/\s+/).filter(w => w.length > 2);
+    const queryTerms = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
 
     let score = 0;
 

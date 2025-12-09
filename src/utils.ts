@@ -95,91 +95,251 @@ export function calculateRelevanceScore(message: any, query: string, projectPath
 
   // Identify core technical terms - specific tech names that MUST match for relevance
   // These are often the most important words in a query (frameworks, tools, protocols)
-  const coreTechPatterns = /^(webpack|docker|react|vue|angular|node|npm|yarn|typescript|python|rust|go|java|kubernetes|aws|gcp|azure|postgres|mysql|redis|mongodb|graphql|rest|grpc|oauth|jwt|git|github|gitlab|jenkins|nginx|apache|eslint|prettier|babel|vite|rollup|esbuild|jest|mocha|cypress|playwright|nextjs|nuxt|svelte|tailwind|sass|less|vitest|pnpm|turborepo|prisma|drizzle|sequelize|sqlite|leveldb|indexeddb)$/i;
+  const coreTechPatterns =
+    /^(webpack|docker|react|vue|angular|node|npm|yarn|typescript|python|rust|go|java|kubernetes|aws|gcp|azure|postgres|mysql|redis|mongodb|graphql|rest|grpc|oauth|jwt|git|github|gitlab|jenkins|nginx|apache|eslint|prettier|babel|vite|rollup|esbuild|jest|mocha|cypress|playwright|nextjs|nuxt|svelte|tailwind|sass|less|vitest|pnpm|turborepo|prisma|drizzle|sequelize|sqlite|leveldb|indexeddb)$/i;
   // Generic terms that should NOT become core terms even if 5+ chars
   const genericTerms = new Set([
     // Action words
-    'config', 'configuration', 'setup', 'install', 'build', 'deploy', 'test', 'run', 'start',
-    'create', 'update', 'fix', 'add', 'remove', 'change', 'optimize', 'optimization', 'improve',
-    'use', 'using', 'with', 'for', 'the', 'and', 'make', 'write', 'read', 'delete', 'check',
+    'config',
+    'configuration',
+    'setup',
+    'install',
+    'build',
+    'deploy',
+    'test',
+    'run',
+    'start',
+    'create',
+    'update',
+    'fix',
+    'add',
+    'remove',
+    'change',
+    'optimize',
+    'optimization',
+    'improve',
+    'use',
+    'using',
+    'with',
+    'for',
+    'the',
+    'and',
+    'make',
+    'write',
+    'read',
+    'delete',
+    'check',
     // Testing-related words (appear in many contexts: A/B testing, user testing, etc.)
-    'testing', 'tests', 'mocks', 'mocking', 'mock', 'stubs', 'stubbing', 'specs', 'coverage',
+    'testing',
+    'tests',
+    'mocks',
+    'mocking',
+    'mock',
+    'stubs',
+    'stubbing',
+    'specs',
+    'coverage',
     // Design/architecture terms (appear across many domains)
-    'design', 'designs', 'designing', 'responsive', 'architecture', 'pattern', 'patterns',
+    'design',
+    'designs',
+    'designing',
+    'responsive',
+    'architecture',
+    'pattern',
+    'patterns',
     // Performance/optimization terms
-    'caching', 'cache', 'rendering', 'render', 'bundle', 'bundling', 'performance',
+    'caching',
+    'cache',
+    'rendering',
+    'render',
+    'bundle',
+    'bundling',
+    'performance',
     // Process/strategy terms
-    'strategy', 'strategies', 'approach', 'implementation', 'solution', 'solutions',
-    'feature', 'features', 'system', 'systems', 'process', 'processing',
-    'handler', 'handling', 'manager', 'management',
+    'strategy',
+    'strategies',
+    'approach',
+    'implementation',
+    'solution',
+    'solutions',
+    'feature',
+    'features',
+    'system',
+    'systems',
+    'process',
+    'processing',
+    'handler',
+    'handling',
+    'manager',
+    'management',
     // Common nouns that appear in many contexts
-    'files', 'file', 'folder', 'directory', 'path', 'code', 'data', 'error', 'errors',
-    'function', 'functions', 'class', 'classes', 'method', 'methods', 'variable', 'variables',
-    'component', 'components', 'module', 'modules', 'package', 'packages', 'library', 'libraries',
+    'files',
+    'file',
+    'folder',
+    'directory',
+    'path',
+    'code',
+    'data',
+    'error',
+    'errors',
+    'function',
+    'functions',
+    'class',
+    'classes',
+    'method',
+    'methods',
+    'variable',
+    'variables',
+    'component',
+    'components',
+    'module',
+    'modules',
+    'package',
+    'packages',
+    'library',
+    'libraries',
     // Format/display words
-    'format', 'formatting', 'style', 'styles', 'layout', 'display', 'show', 'hide', 'visible',
-    'rules', 'rule', 'options', 'option', 'settings', 'setting', 'params', 'parameters',
+    'format',
+    'formatting',
+    'style',
+    'styles',
+    'layout',
+    'display',
+    'show',
+    'hide',
+    'visible',
+    'rules',
+    'rule',
+    'options',
+    'option',
+    'settings',
+    'setting',
+    'params',
+    'parameters',
     // Generic technical words
-    'server', 'client', 'request', 'response', 'async', 'await', 'promise', 'callback',
-    'import', 'export', 'require', 'include', 'define', 'declare', 'return', 'output', 'input',
+    'server',
+    'client',
+    'request',
+    'response',
+    'async',
+    'await',
+    'promise',
+    'callback',
+    'import',
+    'export',
+    'require',
+    'include',
+    'define',
+    'declare',
+    'return',
+    'output',
+    'input',
     // Database/schema generic terms (appear in many contexts)
-    'database', 'schema', 'schemas', 'models', 'model', 'table', 'tables', 'query', 'queries',
-    'migration', 'migrations', 'index', 'indexes', 'field', 'fields', 'column', 'columns',
+    'database',
+    'schema',
+    'schemas',
+    'models',
+    'model',
+    'table',
+    'tables',
+    'query',
+    'queries',
+    'migration',
+    'migrations',
+    'index',
+    'indexes',
+    'field',
+    'fields',
+    'column',
+    'columns',
     // Deployment/infra generic terms
-    'deployment', 'container', 'containers', 'service', 'services', 'cluster', 'clusters',
-    'instance', 'instances', 'environment', 'environments', 'manifest', 'resource', 'resources',
+    'deployment',
+    'container',
+    'containers',
+    'service',
+    'services',
+    'cluster',
+    'clusters',
+    'instance',
+    'instances',
+    'environment',
+    'environments',
+    'manifest',
+    'resource',
+    'resources',
     // Common programming terms
-    'interface', 'interfaces', 'types', 'typing', 'object', 'objects', 'array', 'arrays',
-    'string', 'strings', 'number', 'numbers', 'boolean', 'value', 'values', 'property', 'properties'
+    'interface',
+    'interfaces',
+    'types',
+    'typing',
+    'object',
+    'objects',
+    'array',
+    'arrays',
+    'string',
+    'strings',
+    'number',
+    'numbers',
+    'boolean',
+    'value',
+    'values',
+    'property',
+    'properties',
   ]);
 
-  const queryWords = lowerQuery.split(/\s+/).filter(w => w.length > 2);
+  const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
 
   // STRICT core terms: Only tech names from coreTechPatterns are "must-match"
   // These are specific frameworks/tools that MUST appear for relevance
-  const strictCoreTerms = queryWords.filter(w => coreTechPatterns.test(w));
+  const strictCoreTerms = queryWords.filter((w) => coreTechPatterns.test(w));
 
   // Supporting terms: Other 5+ char words boost score but don't require match
-  const supportingTerms = queryWords.filter(w => !coreTechPatterns.test(w) && !genericTerms.has(w) && w.length >= 5);
+  const supportingTerms = queryWords.filter(
+    (w) => !coreTechPatterns.test(w) && !genericTerms.has(w) && w.length >= 5
+  );
 
   // Check if STRICT core terms match (tech names like vue, rust, kubernetes)
   let strictCoreMatches = 0;
   for (const term of strictCoreTerms) {
     if (lowerContent.includes(term)) {
       strictCoreMatches++;
-      score += 10;  // High weight for tech name matches
+      score += 10; // High weight for tech name matches
     }
   }
 
   // If query has strict tech terms but NONE match, reject completely
   if (strictCoreTerms.length > 0 && strictCoreMatches === 0) {
-    return 0;  // No relevance if specific tech terms don't match
+    return 0; // No relevance if specific tech terms don't match
   }
 
   // Supporting terms boost score but don't reject if missing
   for (const term of supportingTerms) {
     if (lowerContent.includes(term)) {
-      score += 3;  // Moderate boost for supporting term matches
+      score += 3; // Moderate boost for supporting term matches
     }
   }
 
   // Individual word scoring for remaining words
   let wordMatchCount = strictCoreMatches;
   for (const word of queryWords) {
-    if (!strictCoreTerms.includes(word) && !supportingTerms.includes(word) && lowerContent.includes(word)) {
+    if (
+      !strictCoreTerms.includes(word) &&
+      !supportingTerms.includes(word) &&
+      lowerContent.includes(word)
+    ) {
       wordMatchCount++;
-      score += 2;  // +2 per matching word
+      score += 2; // +2 per matching word
     }
   }
 
   // Bonus for exact phrase match (all words in order)
   if (lowerContent.includes(lowerQuery)) {
-    score += 5;  // Bonus for exact phrase, but not required
+    score += 5; // Bonus for exact phrase, but not required
   }
 
   // Bonus for matching majority of query words
   if (queryWords.length > 0 && wordMatchCount >= Math.ceil(queryWords.length * 0.6)) {
-    score += 4;  // 60%+ word match bonus
+    score += 4; // 60%+ word match bonus
   }
 
   // Tool usage bonus

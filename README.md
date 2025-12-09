@@ -2,28 +2,15 @@
 
 ![claude-historian-mcp](demo.gif)
 
-> **📦 Package Renamed:** This project was renamed from `claude-historian` to `claude-historian-mcp` to follow MCP naming conventions. Existing users: update your install command and MCP config args to `claude-historian-mcp`.
-
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for searching your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (& [Claude Desktop](https://claude.ai/download)) conversation history. Find past solutions, track file changes, and learn from previous work.
 
-[![npm version](https://img.shields.io/npm/v/claude-historian-mcp.svg)](https://www.npmjs.com/package/claude-historian-mcp)
-[![npm downloads](https://img.shields.io/npm/dm/claude-historian-mcp.svg)](https://www.npmjs.com/package/claude-historian-mcp)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
-[![GitHub stars](https://img.shields.io/github/stars/Vvkmnn/claude-historian-mcp?style=social)](https://github.com/Vvkmnn/claude-historian-mcp-mcp)
-![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Vvkmnn/claude-historian-mcp?utm_source=oss&utm_medium=github&utm_campaign=Vvkmnn%2Fclaude-historian-mcp&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
-[![Claude](https://img.shields.io/badge/Claude-D97757?logo=claude&logoColor=fff)](#)
+[![npm version](https://img.shields.io/npm/v/claude-historian-mcp.svg)](https://www.npmjs.com/package/claude-historian-mcp) [![GitHub stars](https://img.shields.io/github/stars/Vvkmnn/claude-historian-mcp?style=social)](https://github.com/Vvkmnn/claude-historian-mcp-mcp) ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Vvkmnn/claude-historian-mcp?utm_source=oss&utm_medium=github&utm_campaign=Vvkmnn%2Fclaude-historian-mcp&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews) [![Claude](https://img.shields.io/badge/Claude-D97757?logo=claude&logoColor=fff)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## install
 
 Requirements:
 
-- [Claude Code](https://claude.ai/code)
-
-```bash
-npm install -g claude-historian-mcp
-```
+> [Claude Code](https://claude.ai/code)
 
 **From shell:**
 
@@ -61,51 +48,24 @@ However, in the unlikely event that you pull the wrong package / `npx` registry 
 npm install -g claude-historian-mcp
 ```
 
+> **📦 renamed:** This project was renamed from `claude-historian` to `claude-historian-mcp`. Existing users should update your install command and MCP config args to `claude-historian-mcp`.
+
 ## features
 
 [MCP server](https://modelcontextprotocol.io/) that gives Claude access to your conversation history. Fast search with smart prioritization.
 
 Runs locally (with cool shades `[⌐■_■]`):
 
+#### `search_conversations`
+
+Search your conversation history for past solutions, discussions, and context.
+
 ```
 [⌐■_■] search_conversations query=<query>
   > "How did we fix that Redis connection pooling nightmare?"
   > "Docker container keeps crashing on Kubernetes deployment"
   > "React infinite re-render loop - useEffect dependency hell"
-
-[⌐□_□] find_file_context filepath=<filepath>
-  > "package.json changes that broke everything last month"
-  > "When we accidentally committed .env to main branch"
-  > "Authentication service refactor - before/after comparison"
-
-[⌐×_×] get_error_solutions error_pattern=<error>
-  > "MODULE_NOT_FOUND - the classic npm/yarn version mismatch"
-  > "CORS preflight failing - but only on production Fridays?"
-  > "Database deadlock during Black Friday traffic spike"
-
-[⌐◆_◆] find_similar_queries query=<query>
-  > "Database queries slower than my morning coffee brewing"
-  > "How to implement error boundaries without losing sanity"
-  > "State management: Redux vs Zustand vs just useState"
-
-[⌐○_○] list_recent_sessions
-  > "Tuesday debugging marathon: 9pm-3am flaky test hunt"
-  > "Performance optimization sprint - reduced bundle 40%"
-  > "The great TypeScript migration of 2024"
-
-[⌐⎚_⎚] find_tool_patterns tool_name=<tool>
-  > "Read → Edit → Bash combo for rapid prototyping"
-  > "When I use Grep vs Task for different searches"
-  > "Git operations during feature branch management"
-
-[⌐◉_◉] extract_compact_summary session_id=<id>
-  > "What did we accomplish in last session?"
-  > "Summarize the authentication refactor work"
-  > "Key decisions from yesterday's debugging"
 ```
-
-<details>
-<summary><b>output examples</b></summary>
 
 ```json
 [⌐■_■] "docker auth" | 2 results
@@ -122,6 +82,17 @@ Runs locally (with cool shades `[⌐■_■]`):
 }
 ```
 
+#### `find_file_context`
+
+Track modifications, edits, and discussions about specific files across sessions.
+
+```
+[⌐□_□] find_file_context filepath=<filepath>
+  > "package.json changes that broke everything last month"
+  > "When we accidentally committed .env to main branch"
+  > "Authentication service refactor - before/after comparison"
+```
+
 ```json
 [⌐□_□] "package.json" | 5 operations
 
@@ -136,6 +107,17 @@ Runs locally (with cool shades `[⌐■_■]`):
 }
 ```
 
+#### `get_error_solutions`
+
+Find how you've resolved similar errors before, with code fixes and patterns.
+
+```
+[⌐×_×] get_error_solutions error_pattern=<error>
+  > "MODULE_NOT_FOUND - the classic npm/yarn version mismatch"
+  > "CORS preflight failing - but only on production Fridays?"
+  > "Database deadlock during Black Friday traffic spike"
+```
+
 ```json
 [⌐×_×] "ENOENT no such file" | 2 solutions
 
@@ -146,6 +128,17 @@ Runs locally (with cool shades `[⌐■_■]`):
     "fixes": [{ "content": "Created missing directory", "code": ["mkdir -p ./dist"] }]
   }]
 }
+```
+
+#### `find_similar_queries`
+
+Discover related questions you've asked before and their answers.
+
+```
+[⌐◆_◆] find_similar_queries query=<query>
+  > "Database queries slower than my morning coffee brewing"
+  > "How to implement error boundaries without losing sanity"
+  > "State management: Redux vs Zustand vs just useState"
 ```
 
 ```json
@@ -159,6 +152,17 @@ Runs locally (with cool shades `[⌐■_■]`):
     "project": "api-server"
   }]
 }
+```
+
+#### `list_recent_sessions`
+
+Browse your recent Claude sessions with project context and accomplishments.
+
+```
+[⌐○_○] list_recent_sessions
+  > "Tuesday debugging marathon: 9pm-3am flaky test hunt"
+  > "Performance optimization sprint - reduced bundle 40%"
+  > "The great TypeScript migration of 2024"
 ```
 
 ```json
@@ -177,6 +181,17 @@ Runs locally (with cool shades `[⌐■_■]`):
 }
 ```
 
+#### `find_tool_patterns`
+
+Learn from your successful tool usage workflows and common sequences.
+
+```
+[⌐⎚_⎚] find_tool_patterns tool_name=<tool>
+  > "Read → Edit → Bash combo for rapid prototyping"
+  > "When I use Grep vs Task for different searches"
+  > "Git operations during feature branch management"
+```
+
 ```json
 [⌐⎚_⎚] "Edit" | 3 patterns
 
@@ -189,6 +204,42 @@ Runs locally (with cool shades `[⌐■_■]`):
     "practice": "Read file, edit, then run tests (7x successful)"
   }]
 }
+```
+
+#### `search_plans`
+
+Search Claude Code plan files for past implementation approaches, decisions, and patterns.
+
+```
+[⌐▣_▣] search_plans query=<query>
+  > "How did we architect the authentication system?"
+  > "Database migration strategy from last refactor"
+  > "API versioning approach we decided on"
+```
+
+```json
+[⌐▣_▣] "auth implementation" | 2 plans
+
+{
+  "plans": [{
+    "file": "implement-oauth.md",
+    "ts": "3d ago",
+    "project": "my-app",
+    "summary": "OAuth2 implementation with refresh tokens...",
+    "decisions": ["chose PKCE flow", "JWT for access tokens"]
+  }]
+}
+```
+
+#### `extract_compact_summary`
+
+Get a concise summary of what was accomplished in a specific session.
+
+```
+[⌐◉_◉] extract_compact_summary session_id=<id>
+  > "What did we accomplish in last session?"
+  > "Summarize the authentication refactor work"
+  > "Key decisions from yesterday's debugging"
 ```
 
 ```json
@@ -208,8 +259,6 @@ Runs locally (with cool shades `[⌐■_■]`):
   }
 }
 ```
-
-</details>
 
 ## methodology
 
