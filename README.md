@@ -1,6 +1,6 @@
 # claude-historian-mcp
 
-![claude-historian-mcp](demo.gif)
+![claude-historian-mcp](demo/demo.gif)
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for searching your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (& [Claude Desktop](https://claude.ai/download)) conversation history. Find past solutions, track file changes, and learn from previous work.
 

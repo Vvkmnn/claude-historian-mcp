@@ -48,3 +48,6 @@ docs/
 .env
 .env.local
 .env.*.local
+
+# VHS demo recordings
+vhs/
