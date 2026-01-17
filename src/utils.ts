@@ -1,4 +1,4 @@
-import { readdir, stat, access } from 'fs/promises';
+import { readdir, stat, access, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { platform } from 'os';
@@ -101,6 +101,35 @@ export function extractContentFromMessage(message: any): string {
   }
 
   return '';
+}
+
+/**
+ * Check if a tech term appears in content with normal casing
+ * Allows: "react", "React", "REACT" (lowercase, uppercase, title case)
+ * Rejects: "ReAct", "rEact" (mixed internal capitalization = different term)
+ */
+function matchesTechTerm(content: string, term: string): boolean {
+  const words = content.split(/[\s.,;:!?()\[\]{}'"<>]+/);
+  const termLower = term.toLowerCase();
+
+  for (const word of words) {
+    const cleanWord = word.replace(/[^\w-]/g, '');
+    if (!cleanWord) continue;
+
+    if (cleanWord.toLowerCase() === termLower) {
+      // Check casing pattern - allow normal variations, reject mixed internal caps
+      const isNormalCase =
+        cleanWord === cleanWord.toLowerCase() || // "react"
+        cleanWord === cleanWord.toUpperCase() || // "REACT"
+        cleanWord === cleanWord.charAt(0).toUpperCase() + cleanWord.slice(1).toLowerCase(); // "React"
+
+      if (isNormalCase) {
+        return true;
+      }
+      // Mixed case like "ReAct" - skip this word, might find normal version elsewhere
+    }
+  }
+  return false;
 }
 
 export function calculateRelevanceScore(message: any, query: string, projectPath?: string): number {
@@ -317,7 +346,7 @@ export function calculateRelevanceScore(message: any, query: string, projectPath
   // Check if STRICT core terms match (tech names like vue, rust, kubernetes)
   let strictCoreMatches = 0;
   for (const term of strictCoreTerms) {
-    if (lowerContent.includes(term)) {
+    if (matchesTechTerm(content, term)) {
       strictCoreMatches++;
       score += 10; // High weight for tech name matches
     }
@@ -330,7 +359,7 @@ export function calculateRelevanceScore(message: any, query: string, projectPath
 
   // Supporting terms boost score but don't reject if missing
   for (const term of supportingTerms) {
-    if (lowerContent.includes(term)) {
+    if (matchesTechTerm(content, term)) {
       score += 3; // Moderate boost for supporting term matches
     }
   }
@@ -341,7 +370,7 @@ export function calculateRelevanceScore(message: any, query: string, projectPath
     if (
       !strictCoreTerms.includes(word) &&
       !supportingTerms.includes(word) &&
-      lowerContent.includes(word)
+      matchesTechTerm(content, word)
     ) {
       wordMatchCount++;
       score += 2; // +2 per matching word
@@ -462,4 +491,60 @@ export async function getClaudeDesktopIndexedDBPath(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// Git worktree detection and parent project discovery
+export async function isGitWorktree(projectPath: string): Promise<boolean> {
+  try {
+    const decodedPath = decodeProjectPath(projectPath);
+    const gitPath = join(decodedPath, '.git');
+
+    // Check if .git exists and is a file (not a directory)
+    const stats = await stat(gitPath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+export async function getParentProjectFromWorktree(projectPath: string): Promise<string | null> {
+  try {
+    const decodedPath = decodeProjectPath(projectPath);
+    const gitFilePath = join(decodedPath, '.git');
+
+    // Read the .git file which contains: gitdir: /path/to/parent/.git/worktrees/name
+    const gitFileContent = await readFile(gitFilePath, 'utf-8');
+    const gitdirMatch = gitFileContent.match(/gitdir:\s*(.+)/);
+
+    if (!gitdirMatch) return null;
+
+    const gitdir = gitdirMatch[1].trim();
+    // Extract parent path: /path/to/parent/.git/worktrees/name → /path/to/parent
+    const parentPath = gitdir.replace(/\.git\/worktrees\/.+$/, '').trim();
+
+    if (!parentPath) return null;
+
+    // Encode the parent path to match Claude's project directory naming
+    return encodeProjectPath(parentPath);
+  } catch {
+    return null;
+  }
+}
+
+export async function expandWorktreeProjects(projectDirs: string[]): Promise<string[]> {
+  // TEMPORARILY DISABLED FOR TESTING
+  return projectDirs;
+
+  // const expanded = new Set<string>(projectDirs);
+
+  // for (const projectDir of projectDirs) {
+  //   if (await isGitWorktree(projectDir)) {
+  //     const parentProject = await getParentProjectFromWorktree(projectDir);
+  //     if (parentProject && parentProject !== projectDir) {
+  //       expanded.add(parentProject);
+  //     }
+  //   }
+  // }
+
+  // return Array.from(expanded);
 }

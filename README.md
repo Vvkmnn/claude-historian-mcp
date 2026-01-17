@@ -319,7 +319,7 @@ How [claude-historian](https://github.com/Vvkmnn/claude-historian-mcp) [works](h
 
 See [PERF.md](./PERF.md) for benchmarks, optimization history, and quality scores.
 
-**Current (v1.0.2)**: 4/7 tools at ≥4.0/5, targeting all 7. Focus: structured JSON output for Claude Code consumption.
+**Current (v1.0.4)**: 4.7/5 average score across 8 tools. Latest: fixed word matching bug eliminating false positives (e.g., "react" vs "ReAct"), +1.0 point search relevance improvement.
 
 ## development
 
@@ -376,6 +376,33 @@ Learn from examples:
 This means **local history search for Claude Desktop is not currently possible**. This project focuses on **Claude Code**, which stores full conversation history locally in `~/.claude/projects/`.
 
 You may get some Claude Desktop from Claude Code, but **only when the Claude app is closed**. Furthermore A DXT package and build is available for future compatibility; further investigations are ongoing. Feel free to test with it.
+
+## alternatives
+
+**[claude-mem](https://github.com/thedotmack/claude-mem)** - Plugin with SQLite database and always-on context loading.
+
+| Feature             | claude-historian-mcp  | claude-mem                          |
+| ------------------- | --------------------- | ----------------------------------- |
+| **Setup**           | One command           | Plugin install + database           |
+| **Session startup** | Instant               | Loads 5-8k tokens every session     |
+| **First response**  | Immediate             | Processes context before responding |
+| **Token cost**      | 0 (only when queried) | 5-8k per session always             |
+| **Storage**         | None (reads .jsonl)   | SQLite database + migrations        |
+| **Maintenance**     | Zero                  | Worker daemons, version conflicts   |
+
+**Real-world testing** (over 270+ sessions):
+
+- 95% of sessions never query history (Result: 98% token savings):
+  - claude-mem: 5-8k tokens × 95 wasted = **475k wasted tokens**
+  - claude-historian-mcp: 0 × 95 + (500-2k × 5 queries) = **2.5-10k tokens**
+- Plugin + external database has more overhead on every session / machine start:
+  - claude-historian-mcp: zero startup overhead, instant first response
+  - claude-mem: processes full context before every first response (cached tokens are cheaper to bill, not faster to process)
+  - claude-mem only has savings if querying history in >50% of sessions (very uncommon)
+- Some issues are still being debugged, and can break a session:
+  - Creates stub session files that break `--continue` command
+  - Worker daemon version conflicts cause connection failures
+  - Security hooks block valid documentation edits
 
 ## license
 

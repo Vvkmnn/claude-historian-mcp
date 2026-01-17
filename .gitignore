@@ -1,10 +1,24 @@
 
+# Dependencies
+node_modules/
+dxt/node_modules/
+
+# Build output
+dist/
+dxt/dist/
+
 # Demo files
 demo.mov
+demo/*.mp4
 palette.png
 vhs/*.mp4
 demo/.claude/
 demo/*.cast
 
+# Local configuration
+.claude/
+.mcp.json
+
 # Development documentation
 CLAUDE.md
+COMPARISON.md

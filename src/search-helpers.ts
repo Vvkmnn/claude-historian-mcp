@@ -75,11 +75,89 @@ export class SearchHelpers {
     return `${files}:${tools}:${errors}:${normalizedContent}`;
   }
 
+  // Calculate importance score based on "pain to rediscover" concept
+  // Inspired by claude-mem's chill mode selective recording
+  static calculateImportanceScore(content: string): number {
+    let maxBoost = 1.0;
+
+    // Decisions (highest value - architectural choices, trade-offs, rationale)
+    const decisionPatterns = [
+      'decided to',
+      'decision',
+      'chose',
+      'trade-off',
+      'tradeoff',
+      'rationale',
+      'why we',
+      'instead of',
+      'opted for',
+      'approach',
+      'architecture',
+      'design decision',
+    ];
+    if (decisionPatterns.some((p) => content.includes(p))) {
+      maxBoost = Math.max(maxBoost, 2.5);
+    }
+
+    // Bugfixes (high value - solved problems, gotchas)
+    const bugfixPatterns = [
+      'fixed',
+      'bug',
+      'gotcha',
+      'workaround',
+      'edge case',
+      'issue',
+      'problem',
+      'broke',
+      'breaking',
+    ];
+    if (bugfixPatterns.some((p) => content.includes(p))) {
+      maxBoost = Math.max(maxBoost, 2.0);
+    }
+
+    // Features (moderate value - shipped functionality)
+    const featurePatterns = [
+      'implemented',
+      'shipped',
+      'feature',
+      'added',
+      'built',
+      'created',
+      'new',
+      'release',
+    ];
+    if (featurePatterns.some((p) => content.includes(p))) {
+      maxBoost = Math.max(maxBoost, 1.5);
+    }
+
+    // Discoveries (learning value - insights, learnings)
+    const discoveryPatterns = [
+      'learned',
+      'discovered',
+      'insight',
+      'found out',
+      'realize',
+      'understanding',
+      'now know',
+    ];
+    if (discoveryPatterns.some((p) => content.includes(p))) {
+      maxBoost = Math.max(maxBoost, 1.3);
+    }
+
+    return maxBoost;
+  }
+
   // Enhanced relevance scoring for Claude's needs
   static calculateClaudeRelevance(message: CompactMessage, query: string): number {
     let score = message.relevanceScore || 0;
     const content = message.content.toLowerCase();
     const queryLower = query.toLowerCase();
+
+    // Importance scoring - boost content that's "painful to rediscover"
+    const importanceBoosts = this.calculateImportanceScore(content);
+    if (importanceBoosts > 1.0) {
+      score *= importanceBoosts;
+    }
 
     // Boost technical content
     const technicalBoosts = {

@@ -14,6 +14,7 @@ import {
   extractContentFromMessage,
   findPlanFiles,
   getClaudePlansPath,
+  expandWorktreeProjects,
 } from './utils.js';
 import { readFile, stat } from 'fs/promises';
 import { join } from 'path';
@@ -107,6 +108,9 @@ export class HistorySearchEngine {
     try {
       const projectDirs = await findProjectDirectories();
 
+      // Expand worktrees to include parent projects for comprehensive search
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
+
       // Pre-validate: Don't waste time on queries that won't return value
       if (query.length < 3) {
         return {
@@ -118,10 +122,10 @@ export class HistorySearchEngine {
       }
 
       // Smart project selection - focus on most relevant projects first
-      const maxProjects = Math.min(projectDirs.length, Math.max(8, Math.ceil(limit / 2)));
+      const maxProjects = Math.min(expandedDirs.length, Math.max(8, Math.ceil(limit / 2)));
       const targetDirs = projectFilter
-        ? projectDirs.filter((dir) => dir.includes(projectFilter))
-        : projectDirs.slice(0, maxProjects);
+        ? expandedDirs.filter((dir) => dir.includes(projectFilter))
+        : expandedDirs.slice(0, maxProjects);
 
       // Parallel processing with quality threshold
       const candidates = await this.gatherRelevantCandidates(
@@ -314,25 +318,38 @@ export class HistorySearchEngine {
     // Enhanced scoring with semantic boosts
     const scoredCandidates = candidates.map((msg) => {
       let score = msg.relevanceScore || 0;
+
+      // If relevanceScore is 0 for multi-word query, skip this message entirely
+      // (it failed the multi-word matching requirement)
+      const queryWords = query.split(/\s+/).filter((w) => w.length > 2);
+      if (queryWords.length >= 2 && score === 0) {
+        return { ...msg, finalScore: 0 };
+      }
+
       const contentLower = msg.content.toLowerCase();
       const queryTerms = query
         .toLowerCase()
         .split(/\s+/)
         .filter((w) => w.length > 2);
 
-      // Heavy multiplicative boost for exact query term matches
-      let exactMatchBoost = 1.0;
-      for (const term of queryTerms) {
-        if (contentLower.includes(term)) {
-          exactMatchBoost *= 3.0; // Each matching term triples relevance
-        }
-      }
-      score *= exactMatchBoost;
+      // Query coverage: penalize partial matches
+      const matchCount = queryTerms.filter((term) => contentLower.includes(term)).length;
+      const coverageRatio = queryTerms.length > 0 ? matchCount / queryTerms.length : 1;
 
-      // Penalize results that don't match ANY query terms - additive penalty instead of multiplicative
-      if (exactMatchBoost === 1.0 && queryTerms.length > 0) {
-        score -= 2; // Additive penalty, not multiplicative
-        if (score < 0.5) score = 0.5; // Floor at 0.5 to allow some through
+      // Apply boost based on coverage ratio
+      if (coverageRatio >= 0.5) {
+        // Good coverage (≥50%): apply multiplicative boost for each match
+        for (const term of queryTerms) {
+          if (contentLower.includes(term)) {
+            score *= 2.0; // Each matching term doubles relevance
+          }
+        }
+      } else if (matchCount > 0) {
+        // Partial match (<50%): modest boost but apply coverage penalty
+        score *= (1 + matchCount * 0.5) * coverageRatio;
+      } else {
+        // No matches: heavy penalty
+        score *= 0.1;
       }
 
       // Apply semantic boosts from analysis
@@ -688,12 +705,51 @@ export class HistorySearchEngine {
       // Exact phrase match - high value for Claude Code
       if (lowerContent.includes(lowerQuery)) score += 15;
 
-      // Enhanced word matching with context awareness
-      const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
-      const contentWords = lowerContent.split(/\s+/);
-      const matches = queryWords.filter((word) =>
-        contentWords.some((cWord) => cWord.includes(word))
-      );
+      // Enhanced word matching with case-aware technology name matching
+      // Create word pairs: {original, lower, normalized}
+      const normalizeWord = (w: string) => w.replace(/[^\w-]/g, '').trim();
+      const queryWordPairs = query
+        .split(/\s+/)
+        .map((w) => ({ original: w, lower: w.toLowerCase(), norm: normalizeWord(w.toLowerCase()) }))
+        .filter((p) => p.norm.length > 2);
+      const contentWordPairs = content
+        .split(/\s+/)
+        .map((w) => ({ original: w, lower: w.toLowerCase(), norm: normalizeWord(w.toLowerCase()) }))
+        .filter((p) => p.norm.length > 0);
+
+      const matches = queryWordPairs.filter((qPair) => {
+        const matched = contentWordPairs.some((cPair) => {
+          // Check if normalized lowercase words match
+          const normMatch =
+            cPair.norm === qPair.norm ||
+            cPair.norm.startsWith(qPair.norm + '-') ||
+            cPair.norm.endsWith('-' + qPair.norm);
+          if (!normMatch) return false;
+
+          // If query word is all lowercase, reject matches where content word has mixed case
+          // (e.g., lowercase "react" query shouldn't match "ReAct" content)
+          // Strip punctuation but preserve case for comparison
+          const queryClean = qPair.original.replace(/[^\w-]/g, '');
+          const contentClean = cPair.original.replace(/[^\w-]/g, '');
+          if (queryClean === queryClean.toLowerCase() && queryClean.length > 0) {
+            // Reject if content word has uppercase letters (indicates acronym/proper noun)
+            if (contentClean !== contentClean.toLowerCase()) {
+              return false;
+            }
+          }
+
+          return true;
+        });
+        return matched;
+      });
+
+      // For multi-word queries, require at least 2 words to match to avoid false positives
+      // If insufficient matches, return score of 0 immediately (no other bonuses apply)
+      if (queryWordPairs.length >= 2 && matches.length < 2) {
+        return 0; // Multi-word queries MUST match multiple words - reject false positives
+      }
+
+      // Add points for word matches
       score += matches.length * 3;
 
       // High bonus for tool usage - essential for Claude Code queries
@@ -737,9 +793,10 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
 
       // COMPREHENSIVE: Process more projects to match GLOBAL's reach
-      const limitedDirs = projectDirs.slice(0, 15); // Increased significantly to match GLOBAL scope
+      const limitedDirs = expandedDirs.slice(0, 15); // Increased significantly to match GLOBAL scope
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
@@ -855,9 +912,10 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
 
       // BALANCED: More projects for better coverage, early termination for speed
-      const limitedDirs = projectDirs.slice(0, 8);
+      const limitedDirs = expandedDirs.slice(0, 8);
 
       for (const projectDir of limitedDirs) {
         const jsonlFiles = await findJsonlFiles(projectDir);
@@ -928,9 +986,10 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
 
       // BALANCED: More projects for better coverage, still much faster than sequential
-      const limitedDirs = projectDirs.slice(0, 12); // Increased for better coverage
+      const limitedDirs = expandedDirs.slice(0, 12); // Increased for better coverage
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
@@ -1064,7 +1123,8 @@ export class HistorySearchEngine {
 
     try {
       const projectDirs = await findProjectDirectories();
-      const limitedDirs = projectDirs.slice(0, 15);
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
+      const limitedDirs = expandedDirs.slice(0, 15);
 
       // Focus on core Claude Code tools that GLOBAL would recognize
       const coreTools = new Set([
@@ -1296,9 +1356,10 @@ export class HistorySearchEngine {
     try {
       // OPTIMIZED: Fast session discovery with parallel processing and early termination
       const projectDirs = await findProjectDirectories();
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
 
       // PERFORMANCE: Limit projects and use parallel processing like GLOBAL
-      const limitedDirs = projectDirs.slice(0, 10); // Limit projects for speed
+      const limitedDirs = expandedDirs.slice(0, 10); // Limit projects for speed
 
       // PARALLEL PROCESSING: Process projects concurrently
       const projectResults = await Promise.allSettled(
