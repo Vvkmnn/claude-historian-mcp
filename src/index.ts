@@ -11,6 +11,7 @@ import {
 import { HistorySearchEngine } from './search.js';
 import { BeautifulFormatter } from './formatter.js';
 import { UniversalHistorySearchEngine } from './universal-engine.js';
+import { CompactMessage } from './types.js';
 
 class ClaudeHistorianServer {
   private server: Server;
@@ -28,7 +29,7 @@ class ClaudeHistorianServer {
         capabilities: {
           tools: {},
         },
-      }
+      },
     );
 
     this.searchEngine = new HistorySearchEngine();
@@ -38,7 +39,7 @@ class ClaudeHistorianServer {
   }
 
   private setupToolHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    this.server.setRequestHandler(ListToolsRequestSchema, () => {
       return {
         tools: [
           {
@@ -321,13 +322,13 @@ class ClaudeHistorianServer {
               args?.query as string,
               args?.project as string,
               args?.timeframe as string,
-              (args?.limit as number) || 10
+              (args?.limit as number) || 10,
             );
 
             const detailLevel = (args?.detail_level as string) || 'summary';
             const formattedResult = this.formatter.formatSearchConversations(
               universalResult.results,
-              detailLevel
+              detailLevel,
             );
 
             return {
@@ -338,7 +339,7 @@ class ClaudeHistorianServer {
           case 'find_file_context': {
             const universalResult = await this.universalEngine.findFileContext(
               args?.filepath as string,
-              (args?.limit as number) || 15
+              (args?.limit as number) || 15,
             );
 
             const detailLevel = (args?.detail_level as string) || 'summary';
@@ -347,7 +348,7 @@ class ClaudeHistorianServer {
               universalResult.results,
               args?.filepath as string,
               detailLevel,
-              operationType
+              operationType,
             );
 
             return {
@@ -358,14 +359,14 @@ class ClaudeHistorianServer {
           case 'find_similar_queries': {
             const universalResult = await this.universalEngine.findSimilarQueries(
               args?.query as string,
-              (args?.limit as number) || 8
+              (args?.limit as number) || 8,
             );
 
             const detailLevel = (args?.detail_level as string) || 'summary';
             const formattedResult = this.formatter.formatSimilarQueries(
               universalResult.results,
               args?.query as string,
-              detailLevel
+              detailLevel,
             );
 
             return {
@@ -376,14 +377,14 @@ class ClaudeHistorianServer {
           case 'get_error_solutions': {
             const universalResult = await this.universalEngine.getErrorSolutions(
               args?.error_pattern as string,
-              (args?.limit as number) || 8
+              (args?.limit as number) || 8,
             );
 
             const detailLevel = (args?.detail_level as string) || 'summary';
             const formattedResult = this.formatter.formatErrorSolutions(
               universalResult.results,
               args?.error_pattern as string,
-              detailLevel
+              detailLevel,
             );
 
             return {
@@ -397,8 +398,8 @@ class ClaudeHistorianServer {
 
             const universalResult = await this.universalEngine.getRecentSessions(limit, project);
             const formattedResult = this.formatter.formatRecentSessions(
-              universalResult.results as any,
-              project
+              universalResult.results,
+              project,
             );
 
             return {
@@ -414,11 +415,11 @@ class ClaudeHistorianServer {
             const universalResult = await this.universalEngine.generateCompactSummary(
               sessionId,
               maxMessages,
-              focus
+              focus,
             );
             const formattedResult = this.formatter.formatCompactSummary(
-              [universalResult.results as any],
-              sessionId
+              [universalResult.results],
+              sessionId,
             );
 
             return {
@@ -429,14 +430,14 @@ class ClaudeHistorianServer {
           case 'find_tool_patterns': {
             const universalResult = await this.universalEngine.getToolPatterns(
               args?.tool_name as string,
-              (args?.limit as number) || 12
+              (args?.limit as number) || 12,
             );
 
             const patternType = (args?.pattern_type as string) || 'tools';
             const formattedResult = this.formatter.formatToolPatterns(
-              universalResult.results as any,
+              universalResult.results,
               args?.tool_name as string,
-              patternType
+              patternType,
             );
 
             return {
@@ -452,7 +453,7 @@ class ClaudeHistorianServer {
             const result = await this.universalEngine.searchPlans(query, limit);
             const formattedResult = this.formatter.formatPlanSearch(
               { searchQuery: query, plans: result.results },
-              detailLevel
+              detailLevel,
             );
 
             return {
@@ -493,7 +494,7 @@ class ClaudeHistorianServer {
         console.error('Tool execution error:', error);
         throw new McpError(
           ErrorCode.InternalError,
-          `Error executing ${request.params.name}: ${error}`
+          `Error executing ${request.params.name}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     });
@@ -520,269 +521,18 @@ class ClaudeHistorianServer {
       // This promise never resolves, keeping the server running
     });
   }
-  private async generateSmartSummary(
-    sessionId: string,
-    maxMessages: number,
-    focus: string = 'all'
-  ): Promise<string> {
-    try {
-      // CLAUDE-OPTIMIZED: Fast session lookup with multiple ID formats
-      let sessionMessages: any[] = [];
-      let sessionData: any = null;
-
-      if (sessionId) {
-        // Get recent sessions efficiently - smaller limit for speed
-        const allSessions = await this.searchEngine.getRecentSessions(20); // Reduced from 100 for speed
-
-        // Enhanced session matching - handle multiple ID formats
-        sessionData = allSessions.find(
-          (s) =>
-            s.session_id === sessionId ||
-            s.session_id.startsWith(sessionId) ||
-            sessionId.includes(s.session_id) ||
-            s.session_id.includes(sessionId.replace(/^.*\//, '')) // Handle path-based IDs
-        );
-
-        if (sessionData) {
-          const messages = await this.searchEngine.getSessionMessages(
-            sessionData.project_dir,
-            sessionData.session_id
-          );
-          sessionMessages = messages.slice(0, maxMessages);
-        }
-      }
-
-      if (sessionMessages.length === 0) {
-        return `[⌐◉_◉] No session found for ID: ${sessionId}`;
-      }
-
-      // CLAUDE-OPTIMIZED: Enhanced intelligence with efficient processing
-      const insights = this.extractAdvancedInsights(sessionMessages, focus);
-      const productivity = this.calculateProductivityMetrics(sessionMessages, 0);
-
-      let summary = `[⌐◉_◉] Smart Summary (${insights.messageCount} msgs, today)\n\n`;
-
-      // Enhanced content based on focus with richer metadata
-      switch (focus) {
-        case 'solutions':
-          summary += this.formatSolutionFocus(insights);
-          break;
-        case 'tools':
-          summary += this.formatToolFocus(insights);
-          break;
-        case 'files':
-          summary += this.formatFileFocus(insights);
-          break;
-        default:
-          summary += this.formatComprehensiveSummary(insights, productivity);
-      }
-
-      return summary;
-    } catch (error) {
-      return `[⌐◉_◉] Summary generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    }
-  }
-
-  private extractAdvancedInsights(messages: any[], _focus: string): any {
-    const insights = {
-      messageCount: messages.length,
-      toolsUsed: new Set<string>(),
-      filesReferenced: new Set<string>(),
-      outcomes: new Set<string>(),
-      errors: new Set<string>(),
-      solutions: new Set<string>(),
-      timeSpan: { start: '', end: '' },
-      complexity: 'medium',
-      successRate: 0,
-    };
-
-    let errorCount = 0;
-    let solutionCount = 0;
-
-    messages.forEach((msg) => {
-      // Enhanced tool extraction
-      msg.context?.toolsUsed?.forEach((tool: string) => {
-        if (tool && tool.length > 1) insights.toolsUsed.add(tool);
-      });
-
-      // Enhanced file extraction with filtering
-      msg.context?.filesReferenced?.forEach((file: string) => {
-        if (
-          file &&
-          file.length > 3 &&
-          !file.includes('package.js') &&
-          !file.includes('export interface') &&
-          !file.includes('command-name>')
-        ) {
-          insights.filesReferenced.add(file);
-        }
-      });
-
-      const content = msg.content.toLowerCase();
-
-      // Advanced outcome detection
-      if (msg.type === 'assistant' && msg.content.length > 30) {
-        const outcomePatterns = [
-          /✅[^\n]{10,80}/g,
-          /(fixed|resolved|completed|implemented|created|updated)[^\n]{10,60}/gi,
-          /(successfully|working|solution)[^\n]{10,60}/gi,
-        ];
-
-        outcomePatterns.forEach((pattern) => {
-          const matches = msg.content.match(pattern);
-          if (matches) {
-            matches
-              .slice(0, 1)
-              .forEach((match: string) =>
-                insights.outcomes.add(match.replace(/[✅🔧]/gu, '').trim())
-              );
-          }
-        });
-      }
-
-      // Error and solution tracking
-      if (content.includes('error') || content.includes('failed')) errorCount++;
-      if (content.includes('solution') || content.includes('fixed') || content.includes('resolved'))
-        solutionCount++;
-
-      // Time span tracking
-      if (msg.timestamp) {
-        if (!insights.timeSpan.start || msg.timestamp < insights.timeSpan.start) {
-          insights.timeSpan.start = msg.timestamp;
-        }
-        if (!insights.timeSpan.end || msg.timestamp > insights.timeSpan.end) {
-          insights.timeSpan.end = msg.timestamp;
-        }
-      }
-    });
-
-    // Calculate metrics
-    insights.successRate = errorCount > 0 ? Math.min(solutionCount / errorCount, 1) : 1;
-    insights.complexity =
-      insights.toolsUsed.size > 3 ? 'high' : insights.toolsUsed.size > 1 ? 'medium' : 'low';
-
-    return insights;
-  }
-
-  private calculateProductivityMetrics(messages: any[], executionTime: number): any {
-    const totalMessages = messages.length;
-    const assistantMessages = messages.filter((m) => m.type === 'assistant').length;
-    const toolMessages = messages.filter((m) => m.context?.toolsUsed?.length).length;
-
-    return {
-      efficiency: Math.round((toolMessages / Math.max(totalMessages, 1)) * 100),
-      responseTime: Math.round(executionTime),
-      assistantRatio: Math.round((assistantMessages / Math.max(totalMessages, 1)) * 100),
-    };
-  }
-
-  private formatSolutionFocus(insights: any): string {
-    let output = '';
-    if (insights.outcomes.size > 0) {
-      output += `**Solutions Implemented:**\n${Array.from(insights.outcomes)
-        .slice(0, 2)
-        .map((o: unknown) => `• ${String(o)}`)
-        .join('\n')}\n\n`;
-    }
-    if (insights.successRate > 0) {
-      output += `**Success Rate:** ${Math.round(insights.successRate * 100)}% | **Complexity:** ${insights.complexity}\n`;
-    }
-    return output || '**Focus:** No solutions found in this timeframe\n';
-  }
-
-  private formatToolFocus(insights: any): string {
-    if (insights.toolsUsed.size > 0) {
-      return `**Tools:** ${Array.from(insights.toolsUsed).slice(0, 4).join(', ')}\n**Efficiency:** ${insights.toolsUsed.size} tools used effectively\n`;
-    }
-    return '**Focus:** No tool usage found in this timeframe\n';
-  }
-
-  private formatFileFocus(insights: any): string {
-    if (insights.filesReferenced.size > 0) {
-      return `**Files Modified:** ${Array.from(insights.filesReferenced).slice(0, 3).join(', ')}\n**Scope:** ${insights.filesReferenced.size} files affected\n`;
-    }
-    return '**Focus:** No file operations found in this timeframe\n';
-  }
-
-  private formatComprehensiveSummary(insights: any, productivity: any): string {
-    let output = '';
-
-    if (insights.toolsUsed.size > 0) {
-      output += `**Tools:** ${Array.from(insights.toolsUsed).slice(0, 3).join(', ')}\n`;
-    }
-
-    if (insights.filesReferenced.size > 0) {
-      output += `**Files:** ${Array.from(insights.filesReferenced).slice(0, 2).join(', ')}\n`;
-    }
-
-    if (insights.outcomes.size > 0) {
-      output += `**Key Outcomes:**\n${Array.from(insights.outcomes)
-        .slice(0, 2)
-        .map((o: unknown) => `• ${String(o)}`)
-        .join('\n')}\n`;
-    }
-
-    output += `\n**Metrics:** ${productivity.efficiency}% efficiency | ${productivity.responseTime}ms | Success: ${Math.round(insights.successRate * 100)}%\n`;
-
-    return output;
-  }
-
-  private async getEnhancedRecentSessions(
-    limit: number,
-    project?: string,
-    _includeSummary: boolean = true
-  ): Promise<string> {
-    try {
-      // Get enhanced session data with productivity metrics
-      const sessions = await this.searchEngine.getRecentSessions(limit);
-
-      if (!sessions.length) {
-        return `[⌐○_○] No recent sessions found`;
-      }
-
-      // Filter by project if specified
-      const filteredSessions = project
-        ? sessions.filter((s) => s.projectPath?.includes(project))
-        : sessions;
-
-      if (!filteredSessions.length) {
-        return `[⌐○_○] No sessions found for project: ${project}`;
-      }
-
-      // Use the enhanced formatter for consistency and improvements
-      return this.formatter.formatRecentSessions(filteredSessions, project);
-    } catch (error) {
-      return `[⌐○_○] Enhanced session listing failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    }
-  }
-
-  private formatDuration(seconds: number): string {
-    if (!seconds || isNaN(seconds) || seconds <= 0) return 'Recent';
-    if (seconds < 60) return `${Math.round(seconds)}s`;
-    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-    return `${Math.round(seconds / 3600)}h`;
-  }
-
-  private getTimeAgo(timestamp: string): string {
-    try {
-      const now = new Date();
-      const then = new Date(timestamp);
-      const diffMs = now.getTime() - then.getTime();
-      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-      const diffDays = Math.floor(diffHours / 24);
-
-      if (diffDays > 0) return `${diffDays}d ago`;
-      if (diffHours > 0) return `${diffHours}h ago`;
-      return 'Recent';
-    } catch {
-      return 'Unknown time';
-    }
-  }
+  /* DEAD: Superseded private methods — replaced by universalEngine equivalents (issue #70 cleanup)
+   * generateSmartSummary → universalEngine.generateCompactSummary
+   * extractAdvancedInsights, calculateProductivityMetrics → universalEngine.extractAccomplishmentsFromMessages
+   * formatSolutionFocus, formatToolFocus, formatFileFocus, formatComprehensiveSummary → removed with generateSmartSummary
+   * getEnhancedRecentSessions → universalEngine.getRecentSessions
+   * formatDuration, getTimeAgo → only called by dead getEnhancedRecentSessions
+   * Full implementations preserved in git history. */
 }
 
 // Doctor diagnostics function
 async function runDoctorDiagnostics(): Promise<void> {
-  console.log('🩺 Claude Historian Doctor - Running Diagnostics\n');
+  console.error('🩺 Claude Historian Doctor - Running Diagnostics\n');
 
   const { access, constants } = await import('fs');
   const { promisify } = await import('util');
@@ -791,7 +541,7 @@ async function runDoctorDiagnostics(): Promise<void> {
   let allPassed = true;
 
   // Test 1: Check file locations
-  console.log('📂 Checking file structure...');
+  console.error('📂 Checking file structure...');
   const requiredFiles = [
     './dist/index.js',
     './package.json',
@@ -804,143 +554,154 @@ async function runDoctorDiagnostics(): Promise<void> {
   for (const file of requiredFiles) {
     try {
       await accessAsync(file, constants.F_OK);
-      console.log(`   ✅ ${file}`);
+      console.error(`   ✅ ${file}`);
     } catch {
-      console.log(`   ❌ ${file} - MISSING`);
+      console.error(`   ❌ ${file} - MISSING`);
       allPassed = false;
     }
   }
 
   // Test 2: Check npm dependencies
-  console.log('\n📦 Checking dependencies...');
+  console.error('\n📦 Checking dependencies...');
   try {
     const packageJson = JSON.parse(
-      await import('fs').then((fs) => fs.readFileSync('./package.json', 'utf8'))
-    );
-    const deps = Object.keys(packageJson.dependencies || {});
-    console.log(
-      `   ✅ Found ${deps.length} dependencies: ${deps.slice(0, 3).join(', ')}${deps.length > 3 ? '...' : ''}`
+      await import('fs').then((fs) => fs.readFileSync('./package.json', 'utf8')),
+    ) as { dependencies?: Record<string, string> };
+    const deps = Object.keys(packageJson.dependencies ?? {});
+    console.error(
+      `   ✅ Found ${deps.length} dependencies: ${deps.slice(0, 3).join(', ')}${deps.length > 3 ? '...' : ''}`,
     );
   } catch (error) {
-    console.log(
-      `   ❌ Package.json error: ${error instanceof Error ? error.message : 'Unknown error'}`
+    console.error(
+      `   ❌ Package.json error: ${error instanceof Error ? error.message : 'Unknown error'}`,
     );
     allPassed = false;
   }
 
   // Test 3: Check Claude projects directory
-  console.log('\n🏠 Checking Claude environment...');
+  console.error('\n🏠 Checking Claude environment...');
   try {
     const { getClaudeProjectsPath } = await import('./utils.js');
     const projectsPath = getClaudeProjectsPath();
     await accessAsync(projectsPath, constants.F_OK);
-    console.log(`   ✅ Claude projects found: ${projectsPath}`);
+    console.error(`   ✅ Claude projects found: ${projectsPath}`);
   } catch (error) {
-    console.log(
-      `   ⚠️  Claude projects directory: ${error instanceof Error ? error.message : 'Unknown error'}`
+    console.error(
+      `   ⚠️  Claude projects directory: ${error instanceof Error ? error.message : 'Unknown error'}`,
     );
   }
 
   // Test 4: MCP server functionality
-  console.log('\n⚙️  Testing MCP server...');
+  console.error('\n⚙️  Testing MCP server...');
   const testPassed = await testMCPServer();
   if (testPassed) {
-    console.log('   ✅ MCP server responds correctly');
+    console.error('   ✅ MCP server responds correctly');
   } else {
-    console.log('   ❌ MCP server test failed');
+    console.error('   ❌ MCP server test failed');
     allPassed = false;
   }
 
   // Test 5: Search optimization test
-  console.log('\n🚀 Testing optimizations...');
+  console.error('\n🚀 Testing optimizations...');
   const optimizationResults = await testOptimizations();
-  console.log(
-    `   📊 Smart content preservation: ${optimizationResults.smartContent ? '✅' : '❌'}`
+  console.error(
+    `   📊 Smart content preservation: ${optimizationResults.smartContent ? '✅' : '❌'}`,
   );
-  console.log(`   📊 Dynamic response sizing: ${optimizationResults.dynamicSizing ? '✅' : '❌'}`);
-  console.log(
-    `   📊 Parallel processing & intelligence: ${optimizationResults.parallelProcessing ? '✅' : '❌'}`
+  console.error(
+    `   📊 Dynamic response sizing: ${optimizationResults.dynamicSizing ? '✅' : '❌'}`,
+  );
+  console.error(
+    `   📊 Parallel processing & intelligence: ${optimizationResults.parallelProcessing ? '✅' : '❌'}`,
   );
 
   // Test 6: Performance benchmark
-  console.log('\n⚡ Performance benchmark...');
+  console.error('\n⚡ Performance benchmark...');
   const perfResults = await runPerformanceBenchmark();
-  console.log(`   🏃 Content processing speed: ${perfResults.contentSpeed}ms avg`);
-  console.log(`   🧠 Intelligence features: ${perfResults.intelligenceWorks ? '✅' : '❌'}`);
-  console.log(`   💾 Cache efficiency: ${perfResults.cacheHitRate}% hit rate`);
+  console.error(`   🏃 Content processing speed: ${perfResults.contentSpeed}ms avg`);
+  console.error(`   🧠 Intelligence features: ${perfResults.intelligenceWorks ? '✅' : '❌'}`);
+  console.error(`   💾 Cache efficiency: ${perfResults.cacheHitRate}% hit rate`);
 
   // Summary
-  console.log('\n📋 Diagnostic Summary:');
+  console.error('\n📋 Diagnostic Summary:');
   if (allPassed) {
-    console.log('🎉 All tests passed! Claude Historian is fully operational.');
-    console.log('\n💡 Optimizations active:');
-    console.log('   • Smart content preservation (2000 char limit with intelligent truncation)');
-    console.log('   • Dynamic response sizing based on content type');
-    console.log('   • Parallel processing with 5x cache (500 entries)');
-    console.log('   • Enhanced search intelligence with semantic expansion');
+    console.error('🎉 All tests passed! Claude Historian is fully operational.');
+    console.error('\n💡 Optimizations active:');
+    console.error('   • Smart content preservation (2000 char limit with intelligent truncation)');
+    console.error('   • Dynamic response sizing based on content type');
+    console.error('   • Parallel processing with 5x cache (500 entries)');
+    console.error('   • Enhanced search intelligence with semantic expansion');
   } else {
-    console.log('⚠️  Some issues detected. Please resolve them for optimal performance.');
+    console.error('⚠️  Some issues detected. Please resolve them for optimal performance.');
   }
 }
 
 async function testMCPServer(): Promise<boolean> {
-  return new Promise(async (resolve) => {
-    try {
-      const { spawn } = await import('child_process');
-      const child = spawn('node', ['dist/index.js'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5000,
-      });
+  try {
+    const { spawn } = await import('child_process');
+    const child = spawn('node', ['dist/index.js'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
 
-      const responses: any[] = [];
-      let buffer = '';
+    const responses: unknown[] = [];
+    let buffer = '';
 
-      child.stdout.on('data', (data: any) => {
-        buffer += data.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+    child.stdout.on('data', (data: Buffer) => {
+      buffer += data.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.trim()) {
-            try {
-              responses.push(JSON.parse(line));
-            } catch {
-              // Ignore JSON parse errors
-            }
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            responses.push(JSON.parse(line));
+          } catch {
+            // Ignore non-JSON lines
           }
         }
-      });
-
-      // Send proper MCP handshake
-      const requests = [
-        {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: { protocolVersion: '2024-11-05', capabilities: {} },
-        },
-        { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-      ];
-
-      for (const req of requests) {
-        child.stdin.write(JSON.stringify(req) + '\n');
       }
+    });
 
+    // Send proper MCP handshake
+    const requests = [
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {} },
+      },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    ];
+
+    for (const req of requests) {
+      child.stdin.write(JSON.stringify(req) + '\n');
+    }
+
+    return await new Promise<boolean>((resolve) => {
       setTimeout(() => {
         child.kill();
 
-        // Validate we got proper MCP responses
+        interface McpResponse {
+          id?: number;
+          result?: { serverInfo?: { name?: string }; tools?: unknown[] };
+        }
+
         const hasInit = responses.some(
-          (r) => r.id === 1 && r.result?.serverInfo?.name === 'claude-historian'
+          (r) =>
+            (r as McpResponse).id === 1 &&
+            (r as McpResponse).result?.serverInfo?.name === 'claude-historian',
         );
-        const hasTools = responses.some((r) => r.id === 2 && r.result?.tools?.length >= 7);
+        const hasTools = responses.some(
+          (r) =>
+            (r as McpResponse).id === 2 && ((r as McpResponse).result?.tools?.length ?? 0) >= 7,
+        );
 
         resolve(hasInit && hasTools);
       }, 3000);
-    } catch {
-      resolve(false);
-    }
-  });
+    });
+  } catch {
+    return false;
+  }
 }
 
 async function testOptimizations(): Promise<{
@@ -951,7 +712,7 @@ async function testOptimizations(): Promise<{
   try {
     const { ConversationParser } = await import('./parser.js');
     const { BeautifulFormatter } = await import('./formatter.js');
-    const { HistorySearchEngine } = await import('./search.js');
+    const { HistorySearchEngine: _HistorySearchEngine } = await import('./search.js');
     const { SearchHelpers } = await import('./search-helpers.js');
 
     // Test 1: Smart content preservation - Must preserve complete code blocks
@@ -995,7 +756,7 @@ Solution: Add null check before accessing price`.repeat(3); // Make it long enou
     const hasExpansions = expansions.length > 1 && expansions.includes('exception');
 
     // Test content deduplication
-    const testMessages = [
+    const testMessages: CompactMessage[] = [
       {
         uuid: '1',
         content: 'function test() {}',
@@ -1024,22 +785,19 @@ Solution: Add null check before accessing price`.repeat(3); // Make it long enou
         relevanceScore: 4,
       },
     ];
-    const deduped = SearchHelpers.deduplicateByContent(testMessages as any);
+    const deduped = SearchHelpers.deduplicateByContent(testMessages);
     const removedDuplicate = deduped.length === 2; // Should remove one duplicate
     const keptHigherScore = !!deduped.find((m) => m.uuid === '1'); // Should keep higher scoring one
 
     // Test Claude-specific relevance scoring
-    const claudeScore = SearchHelpers.calculateClaudeRelevance(
-      testMessages[0] as any,
-      'function test'
-    );
+    const claudeScore = SearchHelpers.calculateClaudeRelevance(testMessages[0], 'function test');
     const isEnhanced = claudeScore > (testMessages[0].relevanceScore || 0); // Should boost technical content
 
     const parallelProcessing = hasExpansions && removedDuplicate && keptHigherScore && isEnhanced;
 
     return { smartContent, dynamicSizing, parallelProcessing };
   } catch (error) {
-    console.log('Optimization test error:', error);
+    console.error('Optimization test error:', error);
     return { smartContent: false, dynamicSizing: false, parallelProcessing: false };
   }
 }
@@ -1056,7 +814,7 @@ async function runPerformanceBenchmark(): Promise<{
     // Benchmark content processing speed
     const parser = new ConversationParser();
     const testContents = [
-      'function test() { console.log("hello"); }'.repeat(100),
+      'function test() { console.error("hello"); }'.repeat(100),
       'Error: Cannot find module at /path/file.js:42'.repeat(50),
       'const items = data.map(item => item.value);'.repeat(75),
     ];
@@ -1071,14 +829,16 @@ async function runPerformanceBenchmark(): Promise<{
     const expansions = SearchHelpers.expandQuery('error typescript build');
     const hasSemanticExpansion = expansions.includes('exception') && expansions.length > 2;
 
-    const testMsg = {
+    const testMsg: CompactMessage = {
+      uuid: 'test',
       content: 'function test() { throw new Error("failed"); }',
       type: 'assistant',
       timestamp: new Date().toISOString(),
+      sessionId: 'test',
       context: { toolsUsed: ['Edit'], errorPatterns: ['Error: failed'] },
       relevanceScore: 3,
     };
-    const enhancedScore = SearchHelpers.calculateClaudeRelevance(testMsg as any, 'function error');
+    const enhancedScore = SearchHelpers.calculateClaudeRelevance(testMsg, 'function error');
     const scoreImproved = enhancedScore > 3; // Should be boosted for technical content
 
     const intelligenceWorks = hasSemanticExpansion && scoreImproved;
@@ -1104,7 +864,7 @@ async function runPerformanceBenchmark(): Promise<{
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
+  console.error(`
 Claude Historian - MCP Server for Claude Code History Search
 
 Usage:
@@ -1129,7 +889,7 @@ Configuration snippet for ~/.claude/.claude.json:
 }
 
 if (args.includes('--config')) {
-  console.log(
+  console.error(
     JSON.stringify(
       {
         'claude-historian-mcp': {
@@ -1139,8 +899,8 @@ if (args.includes('--config')) {
         },
       },
       null,
-      2
-    )
+      2,
+    ),
   );
   process.exit(0);
 }

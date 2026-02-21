@@ -1,8 +1,8 @@
 import { readdir, stat, access, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
-import { platform } from 'os';
 import { constants } from 'fs';
+import { ClaudeMessage, MessageContentBlock } from './types.js';
 
 export function getClaudeProjectsPath(): string {
   return join(homedir(), '.claude', 'projects');
@@ -157,15 +157,20 @@ export async function findProjectDirectories(): Promise<string[]> {
     const projectsPath = getClaudeProjectsPath();
     const entries = await readdir(projectsPath);
 
-    const dirsWithMtime: { dir: string; mtime: number }[] = [];
+    // Parallel stat() — was sequential (70 serial syscalls for 70 projects)
+    const results = await Promise.all(
+      entries.map(async (entry) => {
+        try {
+          const fullPath = join(projectsPath, entry);
+          const stats = await stat(fullPath);
+          return stats.isDirectory() ? { dir: entry, mtime: stats.mtimeMs } : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
 
-    for (const entry of entries) {
-      const fullPath = join(projectsPath, entry);
-      const stats = await stat(fullPath);
-      if (stats.isDirectory()) {
-        dirsWithMtime.push({ dir: entry, mtime: stats.mtimeMs });
-      }
-    }
+    const dirsWithMtime = results.filter((r): r is { dir: string; mtime: number } => r !== null);
 
     // Sort by mtime descending (most recent first) - fixes #70
     return dirsWithMtime.sort((a, b) => b.mtime - a.mtime).map((d) => d.dir);
@@ -192,7 +197,7 @@ export async function findJsonlFiles(projectDir: string): Promise<string[]> {
         } catch {
           return { file, mtime: 0 };
         }
-      })
+      }),
     );
 
     return filesWithStats.sort((a, b) => b.mtime - a.mtime).map((f) => f.file);
@@ -202,15 +207,17 @@ export async function findJsonlFiles(projectDir: string): Promise<string[]> {
   }
 }
 
-export function extractContentFromMessage(message: any): string {
+export function extractContentFromMessage(message: {
+  content?: string | MessageContentBlock[];
+}): string {
   if (typeof message.content === 'string') {
     return message.content;
   }
 
   if (Array.isArray(message.content)) {
     return message.content
-      .map((item: any) => {
-        if (item.type === 'text') return item.text;
+      .map((item: MessageContentBlock) => {
+        if (item.type === 'text') return item.text ?? '';
         if (item.type === 'tool_use') return `[Tool: ${item.name}]`;
         if (item.type === 'tool_result') return `[Tool Result]`;
         return '';
@@ -235,37 +242,36 @@ import {
   GENERIC_TERMS,
 } from './scoring-constants.js';
 
-/**
- * Check if a tech term appears in content with normal casing
- * Allows: "react", "React", "REACT" (lowercase, uppercase, title case)
- * Rejects: "ReAct", "rEact" (mixed internal capitalization = different term)
- */
-function matchesTechTerm(content: string, term: string): boolean {
-  const words = content.split(/[\s.,;:!?()\[\]{}'"<>]+/);
-  const termLower = term.toLowerCase();
+/* matchesTechTerm removed — replaced by pre-computed contentWordSet in
+ * calculateRelevanceScore. Content is now split once into a Set<string>
+ * for O(1) lookups instead of O(n) linear scan per term per call.
+ * The old function also re-split content on every invocation (3-5x per message).
+ *
+ * History: v1.0.4 had a mixed-case rejection filter that caused false negatives
+ * for TypeScript, JavaScript, GraphQL, MongoDB, etc. v1.0.5 fixed to simple
+ * case-insensitive matching. v1.0.6 replaced with Set-based lookup. */
 
-  for (const word of words) {
-    const cleanWord = word.replace(/[^\w-]/g, '');
-    if (!cleanWord) continue;
+export function calculateRelevanceScore(
+  message: ClaudeMessage,
+  query: string,
+  projectPath?: string,
+): number {
+  // Extract content ONCE — was previously extracted 3x (in scoreCoreTerms, scoreSupportingTerms, scoreFileReferences)
+  const content = extractContentFromMessage(message.message || {});
+  if (!content) return 0;
 
-    if (cleanWord.toLowerCase() === termLower) {
-      // Check casing pattern - allow normal variations, reject mixed internal caps
-      const isNormalCase =
-        cleanWord === cleanWord.toLowerCase() || // "react"
-        cleanWord === cleanWord.toUpperCase() || // "REACT"
-        cleanWord === cleanWord.charAt(0).toUpperCase() + cleanWord.slice(1).toLowerCase(); // "React"
+  const lowerContent = content.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
 
-      if (isNormalCase) {
-        return true;
-      }
-      // Mixed case like "ReAct" - skip this word, might find normal version elsewhere
-    }
-  }
-  return false;
-}
+  // Split content into words ONCE — matchesTechTerm was re-splitting per call
+  const contentWords = content.split(/[\s.,;:!?()[\]{}'"<>]+/);
+  const contentWordsLower = contentWords
+    .map((w) => w.replace(/[^\w-]/g, '').toLowerCase())
+    .filter(Boolean);
+  const contentWordSet = new Set(contentWordsLower);
 
-export function calculateRelevanceScore(message: any, query: string, projectPath?: string): number {
-  const coreScore = scoreCoreTerms(message, query);
+  const coreScore = scoreCoreTerms(lowerContent, queryWords, contentWordSet);
 
   // If core terms don't match, reject completely
   if (coreScore < 0) {
@@ -273,19 +279,18 @@ export function calculateRelevanceScore(message: any, query: string, projectPath
   }
 
   let score = coreScore;
-  score += scoreSupportingTerms(message, query);
+  score += scoreSupportingTerms(queryWords, contentWordSet);
   score += scoreToolUsage(message);
-  score += scoreFileReferences(message);
+  score += scoreFileReferences(lowerContent);
   score += scoreProjectMatch(message, projectPath);
   return score;
 }
 
-function scoreCoreTerms(message: any, query: string): number {
-  const content = extractContentFromMessage(message.message || {});
-  const lowerQuery = query.toLowerCase();
-  const lowerContent = content.toLowerCase();
-  const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
-
+function scoreCoreTerms(
+  lowerContent: string,
+  queryWords: string[],
+  contentWordSet: Set<string>,
+): number {
   // Strict core terms: tech names from CORE_TECH_PATTERN that MUST match
   const strictCoreTerms = queryWords.filter((w) => CORE_TECH_PATTERN.test(w));
 
@@ -293,7 +298,7 @@ function scoreCoreTerms(message: any, query: string): number {
   let score = 0;
 
   for (const term of strictCoreTerms) {
-    if (matchesTechTerm(content, term)) {
+    if (contentWordSet.has(term)) {
       strictCoreMatches++;
       score += EXACT_MATCH_SCORE;
     }
@@ -307,14 +312,14 @@ function scoreCoreTerms(message: any, query: string): number {
   // Individual word scoring for non-core terms
   let wordMatchCount = strictCoreMatches;
   for (const word of queryWords) {
-    if (!strictCoreTerms.includes(word) && matchesTechTerm(content, word)) {
+    if (!strictCoreTerms.includes(word) && contentWordSet.has(word)) {
       wordMatchCount++;
       score += WORD_MATCH_SCORE;
     }
   }
 
   // Bonus for exact phrase match
-  if (lowerContent.includes(lowerQuery)) {
+  if (lowerContent.includes(queryWords.join(' '))) {
     score += EXACT_PHRASE_BONUS;
   }
 
@@ -326,19 +331,15 @@ function scoreCoreTerms(message: any, query: string): number {
   return score;
 }
 
-function scoreSupportingTerms(message: any, query: string): number {
-  const content = extractContentFromMessage(message.message || {});
-  const lowerQuery = query.toLowerCase();
-  const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
-
+function scoreSupportingTerms(queryWords: string[], contentWordSet: Set<string>): number {
   // Supporting terms: 5+ char words that aren't core tech or generic
   const supportingTerms = queryWords.filter(
-    (w) => !CORE_TECH_PATTERN.test(w) && !GENERIC_TERMS.has(w) && w.length >= 5
+    (w) => !CORE_TECH_PATTERN.test(w) && !GENERIC_TERMS.has(w) && w.length >= 5,
   );
 
   let score = 0;
   for (const term of supportingTerms) {
-    if (matchesTechTerm(content, term)) {
+    if (contentWordSet.has(term)) {
       score += SUPPORTING_TERM_SCORE;
     }
   }
@@ -346,18 +347,19 @@ function scoreSupportingTerms(message: any, query: string): number {
   return score;
 }
 
-function scoreToolUsage(message: any): number {
+function scoreToolUsage(message: ClaudeMessage): number {
   return message.type === 'tool_use' || message.type === 'tool_result' ? TOOL_USAGE_SCORE : 0;
 }
 
-function scoreFileReferences(message: any): number {
-  const content = extractContentFromMessage(message.message || {});
-  return content.includes('src/') || content.includes('.ts') || content.includes('.js')
+function scoreFileReferences(lowerContent: string): number {
+  return lowerContent.includes('src/') ||
+    lowerContent.includes('.ts') ||
+    lowerContent.includes('.js')
     ? FILE_REFERENCE_SCORE
     : 0;
 }
 
-function scoreProjectMatch(message: any, projectPath?: string): number {
+function scoreProjectMatch(message: ClaudeMessage, projectPath?: string): number {
   return projectPath && message.cwd && message.cwd.includes(projectPath) ? PROJECT_MATCH_SCORE : 0;
 }
 
@@ -397,6 +399,7 @@ export function getTimeRangeFilter(timeframe?: string): (timestamp: string) => b
   };
 }
 
+/* DEAD: Desktop detection functions — claudeDesktopAvailable hardcoded false (issue #70)
 export function getClaudeDesktopPath(): string | null {
   switch (platform()) {
     case 'darwin':
@@ -448,6 +451,7 @@ export async function getClaudeDesktopIndexedDBPath(): Promise<string | null> {
     return null;
   }
 }
+*/
 
 // Git worktree detection and parent project discovery
 export async function isGitWorktree(projectPath: string): Promise<boolean> {
@@ -487,9 +491,9 @@ export async function getParentProjectFromWorktree(projectPath: string): Promise
   }
 }
 
-export async function expandWorktreeProjects(projectDirs: string[]): Promise<string[]> {
-  // TEMPORARILY DISABLED FOR TESTING
-  return projectDirs;
+export function expandWorktreeProjects(projectDirs: string[]): Promise<string[]> {
+  // TEMPORARILY DISABLED FOR TESTING — async logic commented out below
+  return Promise.resolve(projectDirs);
 
   // const expanded = new Set<string>(projectDirs);
 

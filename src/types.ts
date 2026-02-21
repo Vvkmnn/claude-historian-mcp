@@ -1,3 +1,10 @@
+export interface MessageContentBlock {
+  type: string;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+}
+
 export interface ClaudeMessage {
   parentUuid: string | null;
   isSidechain: boolean;
@@ -8,7 +15,7 @@ export interface ClaudeMessage {
   type: 'user' | 'assistant' | 'tool_use' | 'tool_result';
   message?: {
     role: string;
-    content: string | any[];
+    content: string | MessageContentBlock[];
     id?: string;
     model?: string;
     usage?: {
@@ -21,6 +28,19 @@ export interface ClaudeMessage {
   uuid: string;
   timestamp: string;
   requestId?: string;
+}
+
+export interface CompactSummaryData {
+  session_id: string;
+  end_time: string | undefined | null;
+  start_time: string | undefined | null;
+  duration_minutes: number;
+  message_count: number;
+  project_path: string | null;
+  tools_used: string[];
+  files_modified: string[];
+  accomplishments: string[];
+  key_decisions: string[];
 }
 
 export interface CompactMessage {
@@ -58,7 +78,7 @@ export interface FileContext {
   changeFrequency?: number;
   impactLevel?: 'low' | 'medium' | 'high';
   affectedSystems?: string[];
-  timeline?: any[];
+  timeline?: TimelineEntry[];
   insights?: string[];
 }
 
@@ -80,7 +100,7 @@ export interface ToolPattern {
   successfulUsages: CompactMessage[];
   commonPatterns: string[];
   bestPractices: string[];
-  workflowSequences?: any[];
+  workflowSequences?: WorkflowStep[];
   successRate?: number;
   averageTime?: number;
   intelligentInsights?: string[];
@@ -109,4 +129,43 @@ export interface PlanResult {
 export interface PlanSearchResult {
   searchQuery: string;
   plans: PlanResult[];
+}
+
+export interface SessionInfo {
+  session_id: string;
+  project_path: string;
+  project_dir: string;
+  project_name: string;
+  message_count: number;
+  duration_minutes: number;
+  end_time: string | undefined;
+  start_time: string | undefined;
+  tools_used: string[];
+  assistant_count: number;
+  error_count: number;
+  session_quality: string;
+  accomplishments: string[];
+  projectPath?: string;
+}
+
+export interface QueryAnalysis {
+  type: string;
+  urgency: 'high' | 'medium' | 'low';
+  scope: 'broad' | 'focused';
+  expectsCode: boolean;
+  expectsSolution: boolean;
+  keywords: string[];
+  semanticBoosts: Record<string, number>;
+}
+
+export interface TimelineEntry {
+  timestamp: string;
+  operation: string;
+  message: CompactMessage;
+}
+
+export interface WorkflowStep {
+  toolName: string;
+  context: string;
+  messages: CompactMessage[];
 }

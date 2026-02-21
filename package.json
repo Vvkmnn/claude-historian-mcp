@@ -1,12 +1,12 @@
 {
   "name": "claude-historian-mcp",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "an MCP server for Claude Code conversation history ",
   "type": "module",
+  "main": "./dist/index.js",
   "bin": {
     "claude-historian-mcp": "./dist/index.js"
   },
-  "main": "./dist/index.js",
   "files": [
     "dist/",
     "README.md",
@@ -16,38 +16,15 @@
     "build": "tsc && chmod +x dist/index.js",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write src",
-    "format:check": "prettier --check src",
-    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run lint",
     "prepublishOnly": "npm run build && npm run lint && npm run format:check",
-    "test": "node dist/index.js --help && npm run type-check",
     "prepare": "husky || true"
-  },
-  "engines": {
-    "node": ">=20.0.0",
-    "npm": ">=10.0.0"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
-  },
-  "optionalDependencies": {
-    "level": "^10.0.0"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.18.0",
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/git": "^10.0.1",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25.0.6",
-    "eslint": "^9.18.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
-    "prettier": "^3.4.2",
-    "semantic-release": "^25.0.2",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.18.0"
   },
   "keywords": [
     "claude",
@@ -67,15 +44,15 @@
     "developer-tools",
     "productivity"
   ],
-  "author": "Claude Code Community",
+  "author": "Vvkmnn",
   "license": "MIT",
-  "homepage": "https://github.com/Vvkmnn/claude-historian-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/Vvkmnn/claude-historian-mcp/issues"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Vvkmnn/claude-historian-mcp.git"
+  },
+  "homepage": "https://github.com/Vvkmnn/claude-historian-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Vvkmnn/claude-historian-mcp/issues"
   },
   "funding": {
     "type": "github",
@@ -84,6 +61,28 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "optionalDependencies": {
+    "level": "^10.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@types/node": "^25.0.6",
+    "eslint": "^9.18.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.4.2",
+    "semantic-release": "^25.0.2",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.18.0"
   },
   "lint-staged": {
     "src/**/*.ts": [

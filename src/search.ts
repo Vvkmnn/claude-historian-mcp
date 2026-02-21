@@ -6,14 +6,16 @@ import {
   ErrorSolution,
   ToolPattern,
   PlanResult,
+  QueryAnalysis,
+  SessionInfo,
 } from './types.js';
 import {
   findProjectDirectories,
   findJsonlFiles,
   getTimeRangeFilter,
-  extractContentFromMessage,
   findPlanFiles,
   getClaudePlansPath,
+  getClaudeProjectsPath,
   expandWorktreeProjects,
   findClaudeMarkdownFiles,
   findTaskFiles,
@@ -30,13 +32,33 @@ export class HistorySearchEngine {
     this.parser = new ConversationParser();
   }
 
+  /**
+   * Fast pre-filter: check if a JSONL file contains a keyword without full JSON parsing.
+   * Reads the raw file and does a case-insensitive string search. ~10x faster than
+   * parsing every line as JSON for files that don't contain the keyword.
+   */
+  private async fileContainsKeyword(
+    projectDir: string,
+    file: string,
+    keyword: string,
+  ): Promise<boolean> {
+    try {
+      const projectsPath = getClaudeProjectsPath();
+      const filePath = join(projectsPath, projectDir, file);
+      const content = await readFile(filePath, 'utf-8');
+      return content.toLowerCase().includes(keyword.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
   // Optimized search for maximum relevance with minimal tokens
 
   async searchConversations(
     query: string,
     projectFilter?: string,
     timeframe?: string,
-    limit: number = 15 // Default to 15 for better coverage
+    limit: number = 15, // Default to 15 for better coverage
   ): Promise<SearchResult> {
     const startTime = Date.now();
 
@@ -52,7 +74,7 @@ export class HistorySearchEngine {
         requestedLimit,
         startTime,
         projectFilter,
-        timeframe
+        timeframe,
       );
     } catch (error) {
       console.error('Search error:', error);
@@ -65,7 +87,7 @@ export class HistorySearchEngine {
     }
   }
 
-  private analyzeQueryIntent(query: string): any {
+  private analyzeQueryIntent(query: string): QueryAnalysis {
     const lowerQuery = query.toLowerCase();
 
     return {
@@ -99,11 +121,11 @@ export class HistorySearchEngine {
 
   private async performOptimizedSearch(
     query: string,
-    analysis: any,
+    analysis: QueryAnalysis,
     limit: number,
     startTime: number,
     projectFilter?: string,
-    timeframe?: string
+    timeframe?: string,
   ): Promise<SearchResult> {
     const timeFilter = getTimeRangeFilter(timeframe);
 
@@ -123,11 +145,10 @@ export class HistorySearchEngine {
         };
       }
 
-      // Smart project selection - focus on most relevant projects first
-      const maxProjects = Math.min(expandedDirs.length, Math.max(8, Math.ceil(limit / 2)));
+      // Search all projects — no artificial scope limits
       const targetDirs = projectFilter
         ? expandedDirs.filter((dir) => dir.includes(projectFilter))
-        : expandedDirs.slice(0, maxProjects);
+        : expandedDirs;
 
       // Parallel processing with quality threshold
       const candidates = await this.gatherRelevantCandidates(
@@ -135,7 +156,7 @@ export class HistorySearchEngine {
         query,
         analysis,
         timeFilter,
-        limit * 2 // Gather 2x but with higher quality threshold
+        limit * 2, // Gather 2x but with higher quality threshold
       );
 
       // Intelligent relevance scoring and selection with quality guarantee
@@ -146,7 +167,7 @@ export class HistorySearchEngine {
         (msg) =>
           (msg.finalScore || msg.relevanceScore || 0) >= 1.5 && // Must be reasonably relevant (use finalScore with query boosting)
           msg.content.length >= 40 && // Must have substantial content
-          !this.isLowValueContent(msg.content) // Must not be filler
+          !this.isLowValueContent(msg.content), // Must not be filler
       );
 
       return {
@@ -164,9 +185,9 @@ export class HistorySearchEngine {
   private async gatherRelevantCandidates(
     projectDirs: string[],
     query: string,
-    analysis: any,
+    analysis: QueryAnalysis,
     timeFilter: ((timestamp: string) => boolean) | undefined,
-    targetCount: number
+    targetCount: number,
   ): Promise<CompactMessage[]> {
     const candidates: CompactMessage[] = [];
 
@@ -178,17 +199,17 @@ export class HistorySearchEngine {
           query,
           analysis,
           timeFilter,
-          Math.ceil(targetCount / projectDirs.length)
+          Math.ceil(targetCount / projectDirs.length),
         );
         return dirCandidates;
-      })
+      }),
     );
 
     // Aggregate with aggressive noise filtering
     for (const result of projectResults) {
       if (result.status === 'fulfilled') {
         const dirMessages = result.value.filter((msg) =>
-          this.isHighlyRelevant(msg, query, analysis)
+          this.isHighlyRelevant(msg, query, analysis),
         );
         candidates.push(...dirMessages);
 
@@ -203,17 +224,17 @@ export class HistorySearchEngine {
   private async processProjectFocused(
     projectDir: string,
     query: string,
-    analysis: any,
+    analysis: QueryAnalysis,
     timeFilter: ((timestamp: string) => boolean) | undefined,
-    targetPerProject: number
+    targetPerProject: number,
   ): Promise<CompactMessage[]> {
     const messages: CompactMessage[] = [];
 
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
 
-      // Process only most relevant files (max 4 per project)
-      const priorityFiles = jsonlFiles.slice(0, Math.min(4, jsonlFiles.length));
+      // Process all files — recent files are first (sorted by mtime in findJsonlFiles)
+      const priorityFiles = jsonlFiles;
 
       for (const file of priorityFiles) {
         const fileMessages = await this.processJsonlFile(projectDir, file, query, timeFilter);
@@ -235,7 +256,11 @@ export class HistorySearchEngine {
     return messages;
   }
 
-  private isHighlyRelevant(message: CompactMessage, query: string, analysis: any): boolean {
+  private isHighlyRelevant(
+    message: CompactMessage,
+    query: string,
+    analysis: QueryAnalysis,
+  ): boolean {
     const content = message.content.toLowerCase();
 
     // Eliminate all noise patterns aggressively - expanded to catch Claude system messages
@@ -273,7 +298,7 @@ export class HistorySearchEngine {
     return this.matchesQueryIntent(message, analysis);
   }
 
-  private matchesQueryIntent(message: CompactMessage, analysis: any): boolean {
+  private matchesQueryIntent(message: CompactMessage, analysis: QueryAnalysis): boolean {
     const content = message.content.toLowerCase();
 
     // Intent-based matching
@@ -314,8 +339,8 @@ export class HistorySearchEngine {
   private selectTopRelevantResults(
     candidates: CompactMessage[],
     query: string,
-    analysis: any,
-    limit: number
+    analysis: QueryAnalysis,
+    limit: number,
   ): CompactMessage[] {
     // Enhanced scoring with semantic boosts
     const scoredCandidates = candidates.map((msg) => {
@@ -357,7 +382,7 @@ export class HistorySearchEngine {
       // Apply semantic boosts from analysis
       Object.entries(analysis.semanticBoosts).forEach(([type, boost]) => {
         if (this.messageMatchesSemanticType(msg, type)) {
-          score *= boost as number;
+          score *= boost;
         }
       });
 
@@ -415,7 +440,7 @@ export class HistorySearchEngine {
     }
   }
 
-  private intelligentDeduplicate(messages: any[]): CompactMessage[] {
+  private intelligentDeduplicate(messages: CompactMessage[]): CompactMessage[] {
     const seen = new Map<string, CompactMessage>();
 
     for (const message of messages) {
@@ -455,7 +480,7 @@ export class HistorySearchEngine {
     projectDir: string,
     query: string,
     timeFilter: ((timestamp: string) => boolean) | undefined,
-    targetLimit: number
+    targetLimit: number,
   ): Promise<{ summary: CompactMessage[]; regular: CompactMessage[] }> {
     const summaryMessages: CompactMessage[] = [];
     const regularMessages: CompactMessage[] = [];
@@ -463,11 +488,9 @@ export class HistorySearchEngine {
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
 
-      // Parallel processing of files within the project
+      // Parallel processing of all files within the project
       const fileResults = await Promise.allSettled(
-        jsonlFiles
-          .slice(0, Math.min(jsonlFiles.length, 8))
-          .map((file) => this.processJsonlFile(projectDir, file, query, timeFilter))
+        jsonlFiles.map((file) => this.processJsonlFile(projectDir, file, query, timeFilter)),
       );
 
       // Aggregate results from all files
@@ -504,7 +527,7 @@ export class HistorySearchEngine {
     projectDir: string,
     file: string,
     query: string,
-    timeFilter: ((timestamp: string) => boolean) | undefined
+    timeFilter: ((timestamp: string) => boolean) | undefined,
   ): Promise<CompactMessage[]> {
     const cacheKey = `${projectDir}/${file}`;
 
@@ -528,7 +551,7 @@ export class HistorySearchEngine {
           const avgScore = msgs.reduce((sum, m) => sum + (m.relevanceScore || 0), 0) / msgs.length;
           return avgScore < (min.avgScore || Infinity) ? { key, avgScore } : min;
         },
-        { key: '', avgScore: Infinity }
+        { key: '', avgScore: Infinity },
       );
 
       if (leastValuable.key) {
@@ -544,7 +567,7 @@ export class HistorySearchEngine {
     summaryMessages: CompactMessage[],
     allMessages: CompactMessage[],
     query: string,
-    limit: number
+    limit: number,
   ): CompactMessage[] {
     // Sort by relevance and recency
     const sortedSummaries = summaryMessages
@@ -694,9 +717,9 @@ export class HistorySearchEngine {
     return query;
   }
 
-  private calculateRelevanceScore(message: any, query: string): number {
+  private calculateRelevanceScore(message: CompactMessage, query: string): number {
     try {
-      const content = extractContentFromMessage(message.message || {});
+      const content = message.content;
       if (!content) return 0;
 
       const lowerQuery = query.toLowerCase();
@@ -709,7 +732,7 @@ export class HistorySearchEngine {
 
       // Enhanced word matching with case-aware technology name matching
       // Create word pairs: {original, lower, normalized}
-      const normalizeWord = (w: string) => w.replace(/[^\w-]/g, '').trim();
+      const normalizeWord = (w: string): string => w.replace(/[^\w-]/g, '').trim();
       const queryWordPairs = query
         .split(/\s+/)
         .map((w) => ({ original: w, lower: w.toLowerCase(), norm: normalizeWord(w.toLowerCase()) }))
@@ -797,16 +820,23 @@ export class HistorySearchEngine {
       const projectDirs = await findProjectDirectories();
       const expandedDirs = await expandWorktreeProjects(projectDirs);
 
-      // COMPREHENSIVE: Process more projects to match GLOBAL's reach
-      const limitedDirs = expandedDirs.slice(0, 15); // Increased significantly to match GLOBAL scope
+      // Broad coverage for error solution discovery
+      const limitedDirs = expandedDirs;
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
 
-          // COMPREHENSIVE: Process more files to match GLOBAL's reach
-          const limitedFiles = jsonlFiles.slice(0, 10); // Increased to match GLOBAL scope
+          // Pre-filter: only parse files that mention the target filename
+          const fileName = filePath.split('/').pop() || filePath;
+          const relevantFiles = await Promise.all(
+            jsonlFiles.map(async (file) => {
+              const contains = await this.fileContainsKeyword(projectDir, file, fileName);
+              return contains ? file : null;
+            }),
+          );
+          const limitedFiles = relevantFiles.filter((f): f is string => f !== null);
 
           const fileResults = await Promise.allSettled(
             limitedFiles.map(async (file) => {
@@ -842,16 +872,16 @@ export class HistorySearchEngine {
                 ];
 
                 const hasContentRef = pathVariations.some(
-                  (variation) => variation.length > 0 && contentLower.includes(variation)
+                  (variation) => variation.length > 0 && contentLower.includes(variation),
                 );
 
                 // Enhanced git pattern matching
                 const hasGitRef =
                   /(?:modified|added|deleted|new file|renamed|M\s+|A\s+|D\s+)[\s:]*[^\n]*/.test(
-                    msg.content
+                    msg.content,
                   ) &&
                   pathVariations.some(
-                    (variation) => variation.length > 0 && contentLower.includes(variation)
+                    (variation) => variation.length > 0 && contentLower.includes(variation),
                   );
 
                 return hasFileRef || hasContentRef || hasGitRef;
@@ -878,7 +908,7 @@ export class HistorySearchEngine {
                 }
               }
               return null;
-            })
+            }),
           );
 
           // Collect successful file results
@@ -890,7 +920,7 @@ export class HistorySearchEngine {
           }
 
           return validContexts;
-        })
+        }),
       );
 
       // Aggregate all results from parallel processing
@@ -901,7 +931,7 @@ export class HistorySearchEngine {
       }
 
       return fileContexts.sort(
-        (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
+        (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
       );
     } catch (error) {
       console.error('File context search error:', error);
@@ -916,14 +946,14 @@ export class HistorySearchEngine {
       const projectDirs = await findProjectDirectories();
       const expandedDirs = await expandWorktreeProjects(projectDirs);
 
-      // BALANCED: More projects for better coverage, early termination for speed
-      const limitedDirs = expandedDirs.slice(0, 8);
+      // Broad coverage with early termination for speed
+      const limitedDirs = expandedDirs;
 
       for (const projectDir of limitedDirs) {
         const jsonlFiles = await findJsonlFiles(projectDir);
 
-        // BALANCED: More files per project for better context
-        const limitedFiles = jsonlFiles.slice(0, 5);
+        // Recent files per project for broad context
+        const limitedFiles = jsonlFiles;
 
         for (const file of limitedFiles) {
           const messages = await this.parser.parseJsonlFile(projectDir, file);
@@ -934,7 +964,7 @@ export class HistorySearchEngine {
               msg.type === 'user' &&
               msg.content.length > 15 &&
               msg.content.length < 800 &&
-              !this.isLowValueContent(msg.content) // Only quality queries
+              !this.isLowValueContent(msg.content), // Only quality queries
           );
 
           for (let i = 0; i < userQueries.length; i++) {
@@ -990,8 +1020,8 @@ export class HistorySearchEngine {
       const projectDirs = await findProjectDirectories();
       const expandedDirs = await expandWorktreeProjects(projectDirs);
 
-      // BALANCED: More projects for better coverage, still much faster than sequential
-      const limitedDirs = expandedDirs.slice(0, 12); // Increased for better coverage
+      // Broad coverage for tool pattern discovery
+      const limitedDirs = expandedDirs;
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
@@ -999,14 +1029,30 @@ export class HistorySearchEngine {
           const jsonlFiles = await findJsonlFiles(projectDir);
 
           // BALANCED: More files for better coverage
-          const limitedFiles = jsonlFiles.slice(0, 6);
+          const limitedFiles = jsonlFiles;
 
           const projectErrorMap = new Map<string, CompactMessage[]>();
 
+          // Pre-filter terms: skip JSONL lines that don't mention errors at all.
+          // Dramatically reduces JSON.parse calls for files with few error messages.
+          const errorPreFilter = errorPattern
+            .toLowerCase()
+            .split(/\s+/)
+            .filter((w) => w.length > 2);
+          const preFilterTerms = [
+            ...new Set([...errorPreFilter, 'error', 'failed', 'exception', 'cannot']),
+          ];
+
           // PARALLEL: Process files within project simultaneously
-          const fileResults = await Promise.allSettled(
+          await Promise.allSettled(
             limitedFiles.map(async (file) => {
-              const messages = await this.parser.parseJsonlFile(projectDir, file);
+              const messages = await this.parser.parseJsonlFile(
+                projectDir,
+                file,
+                undefined,
+                undefined,
+                preFilterTerms,
+              );
 
               // Find error patterns and their solutions
               for (let i = 0; i < messages.length - 1; i++) {
@@ -1018,7 +1064,7 @@ export class HistorySearchEngine {
 
                 // Extract error type if present (TypeError, SyntaxError, etc.)
                 const errorType = lowerPattern.match(
-                  /(typeerror|syntaxerror|referenceerror|rangeerror|error)/
+                  /(typeerror|syntaxerror|referenceerror|rangeerror|error)/,
                 )?.[0];
 
                 const hasMatchingError = current.context?.errorPatterns?.some((err) => {
@@ -1048,7 +1094,7 @@ export class HistorySearchEngine {
                   // Use the most relevant error pattern as key
                   const matchedError =
                     current.context?.errorPatterns?.find((err) =>
-                      err.toLowerCase().includes(lowerPattern)
+                      err.toLowerCase().includes(lowerPattern),
                     ) ||
                     current.context?.errorPatterns?.[0] ||
                     errorPattern;
@@ -1065,17 +1111,17 @@ export class HistorySearchEngine {
                       (msg) =>
                         msg.type === 'assistant' ||
                         msg.type === 'tool_result' ||
-                        (msg.type === 'user' && msg.content.length < 200) // Include short user clarifications
+                        (msg.type === 'user' && msg.content.length < 200), // Include short user clarifications
                     );
 
                   projectErrorMap.get(errorKey)!.push(...solutionMessages);
                 }
               }
-            })
+            }),
           );
 
           return projectErrorMap;
-        })
+        }),
       );
 
       // Aggregate results from parallel processing
@@ -1099,7 +1145,7 @@ export class HistorySearchEngine {
           (msg) =>
             msg.type === 'assistant' &&
             !this.isLowValueContent(msg.content) &&
-            msg.content.length >= 20
+            msg.content.length >= 20,
         );
 
         if (qualitySolutions.length > 0) {
@@ -1126,7 +1172,7 @@ export class HistorySearchEngine {
     try {
       const projectDirs = await findProjectDirectories();
       const expandedDirs = await expandWorktreeProjects(projectDirs);
-      const limitedDirs = expandedDirs.slice(0, 15);
+      const limitedDirs = expandedDirs;
 
       // Focus on core Claude Code tools that GLOBAL would recognize
       const coreTools = new Set([
@@ -1145,15 +1191,25 @@ export class HistorySearchEngine {
       const projectResults = await Promise.allSettled(
         limitedDirs.map(async (projectDir) => {
           const jsonlFiles = await findJsonlFiles(projectDir);
-          const limitedFiles = jsonlFiles.slice(0, 8);
+          const limitedFiles = jsonlFiles;
 
           const projectToolMap = new Map<string, CompactMessage[]>();
           const projectWorkflowMap = new Map<string, CompactMessage[]>();
 
+          // Pre-filter: skip JSONL lines that don't mention tool usage.
+          // Tool usage appears as tool_use type in message structure.
+          const toolPreFilter = ['tool_use', ...(toolName ? [toolName.toLowerCase()] : [])];
+
           // PARALLEL: Process files within project simultaneously
-          const fileResults = await Promise.allSettled(
+          await Promise.allSettled(
             limitedFiles.map(async (file) => {
-              const messages = await this.parser.parseJsonlFile(projectDir, file);
+              const messages = await this.parser.parseJsonlFile(
+                projectDir,
+                file,
+                undefined,
+                undefined,
+                toolPreFilter,
+              );
 
               // Extract individual tool usage patterns
               for (const msg of messages) {
@@ -1235,11 +1291,11 @@ export class HistorySearchEngine {
                   }
                 }
               }
-            })
+            }),
           );
 
           return { tools: projectToolMap, workflows: projectWorkflowMap };
-        })
+        }),
       );
 
       // Aggregate results from parallel processing
@@ -1276,7 +1332,7 @@ export class HistorySearchEngine {
       // Add diverse individual tool patterns (different tools, not just highest frequency)
       const usedTools = new Set<string>();
       for (const [tool, messages] of Array.from(toolMap.entries()).sort(
-        (a, b) => b[1].length - a[1].length
+        (a, b) => b[1].length - a[1].length,
       )) {
         if (messages.length >= 1 && !usedTools.has(tool) && patterns.length < limit) {
           const uniqueMessages = SearchHelpers.deduplicateByContent(messages);
@@ -1319,7 +1375,7 @@ export class HistorySearchEngine {
 
       // If we still have space, add any remaining high-frequency workflows
       for (const [workflow, messages] of Array.from(workflowMap.entries()).sort(
-        (a, b) => b[1].length - a[1].length
+        (a, b) => b[1].length - a[1].length,
       )) {
         if (workflow.includes('→') && messages.length >= 1 && patterns.length < limit) {
           if (!patterns.some((p) => p.toolName === workflow)) {
@@ -1354,14 +1410,14 @@ export class HistorySearchEngine {
     }
   }
 
-  async getRecentSessions(limit: number = 10): Promise<any[]> {
+  async getRecentSessions(limit: number = 10): Promise<SessionInfo[]> {
     try {
       // OPTIMIZED: Fast session discovery with parallel processing and early termination
       const projectDirs = await findProjectDirectories();
       const expandedDirs = await expandWorktreeProjects(projectDirs);
 
-      // PERFORMANCE: Limit projects and use parallel processing like GLOBAL
-      const limitedDirs = expandedDirs.slice(0, 10); // Limit projects for speed
+      // Broad coverage for session discovery
+      const limitedDirs = expandedDirs;
 
       // PARALLEL PROCESSING: Process projects concurrently
       const projectResults = await Promise.allSettled(
@@ -1370,11 +1426,13 @@ export class HistorySearchEngine {
           const decodedPath = projectDir.replace(/-/g, '/');
           const projectName = decodedPath.split('/').pop() || 'unknown';
 
-          // PERFORMANCE: Limit files per project and process in parallel
-          const limitedFiles = jsonlFiles.slice(0, 5); // Limit files for speed
+          // Recent files per project — sessions are sorted by mtime, so recent
+          // sessions are in recent files. Limit per-project to avoid parsing old
+          // sessions that will be filtered out by the end_time sort anyway.
+          const recentFiles = jsonlFiles.slice(0, Math.max(3, Math.ceil(limit / 2)));
 
           const sessionResults = await Promise.allSettled(
-            limitedFiles.map(async (file) => {
+            recentFiles.map(async (file) => {
               const messages = await this.parser.parseJsonlFile(projectDir, file);
 
               if (messages.length === 0) return null;
@@ -1388,7 +1446,7 @@ export class HistorySearchEngine {
               let realDuration = 0;
               if (startTime && endTime) {
                 realDuration = Math.round(
-                  (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000
+                  (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000,
                 );
               }
 
@@ -1410,18 +1468,18 @@ export class HistorySearchEngine {
                 session_quality: this.calculateSessionQuality(messages, toolsUsed, []),
                 accomplishments: accomplishments.slice(0, 3), // Top 3 accomplishments
               };
-            })
+            }),
           );
 
           // Collect successful session results
           return sessionResults
             .filter((result) => result.status === 'fulfilled' && result.value)
-            .map((result) => (result as PromiseFulfilledResult<any>).value);
-        })
+            .map((result) => (result as PromiseFulfilledResult<SessionInfo>).value);
+        }),
       );
 
       // Flatten and collect all sessions
-      const realSessions: any[] = [];
+      const realSessions: SessionInfo[] = [];
       for (const result of projectResults) {
         if (result.status === 'fulfilled') {
           realSessions.push(...result.value);
@@ -1431,7 +1489,7 @@ export class HistorySearchEngine {
       // Sort by real end time
       return realSessions
         .filter((s) => s.end_time) // Only sessions with real timestamps
-        .sort((a, b) => new Date(b.end_time).getTime() - new Date(a.end_time).getTime())
+        .sort((a, b) => new Date(b.end_time!).getTime() - new Date(a.end_time!).getTime())
         .slice(0, limit);
     } catch (error) {
       console.error('Recent sessions error:', error);
@@ -1440,9 +1498,9 @@ export class HistorySearchEngine {
   }
 
   private calculateSessionQuality(
-    messages: any[],
+    messages: CompactMessage[],
     toolsUsed: string[],
-    errorMessages: any[]
+    errorMessages: CompactMessage[],
   ): string {
     const score = toolsUsed.length * 10 + messages.length * 0.5 - errorMessages.length * 5;
     if (score > 50) return 'excellent';
@@ -1500,7 +1558,7 @@ export class HistorySearchEngine {
 
       // Explicit accomplishments - expanded patterns
       const accomplishMatch = content.match(
-        /(?:completed|implemented|fixed|created|built|added):?\s*([^.\n]{10,80})/i
+        /(?:completed|implemented|fixed|created|built|added):?\s*([^.\n]{10,80})/i,
       );
       if (accomplishMatch) {
         accomplishments.push(accomplishMatch[1].trim());
@@ -1508,7 +1566,7 @@ export class HistorySearchEngine {
       }
 
       const summaryMatch = content.match(
-        /(?:here's what we accomplished|accomplishments):?\s*([^.\n]{10,100})/i
+        /(?:here's what we accomplished|accomplishments):?\s*([^.\n]{10,100})/i,
       );
       if (summaryMatch) {
         accomplishments.push(summaryMatch[1].trim());
@@ -1536,7 +1594,10 @@ export class HistorySearchEngine {
     return [...new Set(accomplishments)].slice(0, 3);
   }
 
-  async getSessionMessages(encodedProjectDir: string, sessionId: string): Promise<any[]> {
+  async getSessionMessages(
+    encodedProjectDir: string,
+    sessionId: string,
+  ): Promise<CompactMessage[]> {
     try {
       // Direct access to specific session file
       const jsonlFile = `${sessionId}.jsonl`;
@@ -1546,7 +1607,7 @@ export class HistorySearchEngine {
     } catch (error) {
       console.error(
         `Error getting session messages for ${sessionId} in ${encodedProjectDir}:`,
-        error
+        error,
       );
       return [];
     }
@@ -1568,7 +1629,7 @@ export class HistorySearchEngine {
 
     return (
       lowValuePatterns.some((pattern) =>
-        typeof pattern === 'string' ? lowerContent.includes(pattern) : pattern.test(lowerContent)
+        typeof pattern === 'string' ? lowerContent.includes(pattern) : pattern.test(lowerContent),
       ) || content.trim().length < 20
     );
   }
@@ -1624,8 +1685,8 @@ export class HistorySearchEngine {
       const toolMentionMatch = content.match(
         new RegExp(
           `(?:use|using|called?)\\s+(?:the\\s+)?${toolName}(?:\\s+tool)?\\s+(?:to|on|for)\\s+([^.\\n]{10,60})`,
-          'i'
-        )
+          'i',
+        ),
       );
       if (toolMentionMatch) {
         patterns.push(`${toolName}: ${toolMentionMatch[1].trim()}`);
@@ -1716,7 +1777,7 @@ export class HistorySearchEngine {
             timestamp: stats.mtime.toISOString(),
             relevanceScore,
           };
-        })
+        }),
       );
 
       // Collect successful results
@@ -1775,7 +1836,7 @@ export class HistorySearchEngine {
     query: string,
     title: string | null,
     sections: string[],
-    content: string
+    content: string,
   ): number {
     const lowerQuery = query.toLowerCase();
     const queryTerms = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
@@ -1891,10 +1952,17 @@ export class HistorySearchEngine {
       for (const filePath of taskFiles) {
         try {
           const content = await readFile(filePath, 'utf-8');
-          const task = JSON.parse(content);
+          const task = JSON.parse(content) as {
+            id?: string;
+            subject?: string;
+            description?: string;
+            status?: string;
+            updatedAt?: string;
+            createdAt?: string;
+          };
 
           // Each file is a single task object
-          const taskText = `${task.subject || ''} ${task.description || ''}`.toLowerCase();
+          const taskText = `${task.subject ?? ''} ${task.description ?? ''}`.toLowerCase();
 
           let score = 0;
 

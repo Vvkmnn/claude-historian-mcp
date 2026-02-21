@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 108 96" width="220" height="220">
+  <style>
+    .toga-back { animation: back-sway 3s ease-in-out infinite; transform-origin: 16px 37px; }
+    .band-1 { animation: band1-sway 3.2s ease-in-out infinite; }
+    .band-2 { animation: band2-sway 2.9s ease-in-out infinite; }
+    .band-3 { animation: band3-sway 3.6s ease-in-out infinite; }
+    .band-4 { animation: band4-sway 2.5s ease-in-out infinite; }
+    .band-5 { animation: band5-sway 3.1s ease-in-out infinite; }
+    .scroll-arm { animation: scroll-hold 3s ease-in-out infinite; transform-origin: 86px 48px; }
+
+    @keyframes back-sway { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(-2.5deg); } }
+    @keyframes band1-sway { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(-0.4px); } 65% { transform: translateX(0.15px); } }
+    @keyframes band2-sway { 0%, 100% { transform: translateX(0); } 35% { transform: translateX(0.3px); } 70% { transform: translateX(-0.1px); } }
+    @keyframes band3-sway { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-0.25px); } 60% { transform: translateX(0.2px); } }
+    @keyframes band4-sway { 0%, 100% { transform: translateX(0); } 40% { transform: translateX(0.35px); } 75% { transform: translateX(-0.15px); } }
+    @keyframes band5-sway { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(-0.2px); } 70% { transform: translateX(0.1px); } }
+    @keyframes scroll-hold { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(1.5deg); } }
+  </style>
+
+  <!-- Back toga drape -->
+  <g class="toga-back">
+    <polygon points="16,36 10,36 6,72 8,82 20,82 22,68" fill="#9B1B1B"/>
+    <polygon points="16,36 12,36 8,72 10,78 16,68" fill="#7A1515" opacity="0.7"/>
+  </g>
+
+  <!-- Body -->
+  <rect x="18" y="32" width="64" height="4" fill="#E07C4C"/>
+  <rect x="14" y="36" width="72" height="32" fill="#E07C4C"/>
+
+  <!-- Ears -->
+  <rect x="22" y="18" width="8" height="14" fill="#E07C4C"/>
+  <rect x="70" y="18" width="8" height="14" fill="#E07C4C"/>
+
+  <!-- Legs -->
+  <rect x="24" y="68" width="12" height="14" fill="#E07C4C"/>
+  <rect x="64" y="68" width="12" height="14" fill="#E07C4C"/>
+
+  <!-- Front toga (strap + bands) -->
+  <g class="toga-front">
+    <!-- Shoulder strap from fibula -->
+    <g class="band-5">
+      <path d="M18,58 Q14,48 12,37 L20,37 Q20,48 34,63 Z" fill="#9B1B1B"/>
+      <path d="M20,58 Q16,48 13,38 L19,38 Q19,48 30,61 Z" fill="#7A1515" opacity="0.4"/>
+      <line x1="24" y1="59" x2="17" y2="39" stroke="#5E1010" stroke-width="0.6" opacity="0.5"/>
+    </g>
+    <!-- Bands -->
+    <g class="band-1"><path d="M12,65 Q38,80 86,69 L86,76 Q40,85 12,73 Z" fill="#5E1010"/></g>
+    <g class="band-2"><path d="M12,62 Q60,75 87,62 L87,69 Q58,79 12,69 Z" fill="#7A1515"/></g>
+    <g class="band-3"><path d="M12,59 Q48,70 87,58 L87,65 Q50,76 12,66 Z" fill="#8B1A1A"/></g>
+    <g class="band-4"><path d="M12,56 Q36,68 87,56 L87,63 Q38,73 12,63 Z" fill="#9B1B1B"/></g>
+    <g class="band-5">
+      <path d="M12,53 Q56,64 87,52 L87,59 Q54,69 12,60 Z" fill="#A52222"/>
+      <path d="M12,53 Q56,64 87,52" stroke="#C03030" stroke-width="0.8" fill="none" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- Fibula -->
+  <circle cx="16" cy="37" r="4" fill="#DAA520" stroke="#8B6914" stroke-width="0.6"/>
+
+  <!-- Eyes -->
+  <rect x="34" y="42" width="8" height="10" fill="#000000"/>
+  <rect x="66" y="42" width="8" height="10" fill="#000000"/>
+
+  <!-- Left arm (empty) -->
+  <rect x="2" y="44" width="12" height="8" fill="#E07C4C"/>
+
+  <!-- Right arm + scroll -->
+  <g class="scroll-arm">
+    <rect x="86" y="44" width="12" height="8" fill="#E07C4C"/>
+    <!-- Scroll body (solid parchment) -->
+    <g>
+      <!-- Scroll parchment body (solid, opaque) -->
+      <rect x="89" y="22" width="9" height="38" rx="1" fill="#E8D5B0" stroke="#B8956A" stroke-width="0.5"/>
+      <!-- Parchment inner shading -->
+      <rect x="89" y="22" width="4" height="38" rx="1" fill="#D4C49A" opacity="0.3"/>
+      <!-- Top roll -->
+      <ellipse cx="93.5" cy="22" rx="5" ry="3" fill="#D4B483" stroke="#A07850" stroke-width="0.6"/>
+      <!-- Top roll shadow line -->
+      <ellipse cx="93.5" cy="23" rx="4.5" ry="1.5" fill="#C4A060" opacity="0.3"/>
+      <!-- Bottom roll -->
+      <ellipse cx="93.5" cy="60" rx="5" ry="3" fill="#D4B483" stroke="#A07850" stroke-width="0.6"/>
+      <!-- Bottom roll shadow line -->
+      <ellipse cx="93.5" cy="59" rx="4.5" ry="1.5" fill="#C4A060" opacity="0.3"/>
+      <!-- Roll knobs (wooden dowels) -->
+      <circle cx="88.5" cy="22" r="1.5" fill="#8B6914" stroke="#6B4E0F" stroke-width="0.3"/>
+      <circle cx="98.5" cy="22" r="1.5" fill="#8B6914" stroke="#6B4E0F" stroke-width="0.3"/>
+      <circle cx="88.5" cy="60" r="1.5" fill="#8B6914" stroke="#6B4E0F" stroke-width="0.3"/>
+      <circle cx="98.5" cy="60" r="1.5" fill="#8B6914" stroke="#6B4E0F" stroke-width="0.3"/>
+      <!-- Text lines on scroll -->
+      <line x1="91" y1="28" x2="96" y2="28" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="31" x2="95.5" y2="31" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="34" x2="95" y2="34" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="37" x2="96" y2="37" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="40" x2="94.5" y2="40" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="43" x2="95.5" y2="43" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="46" x2="95" y2="46" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="49" x2="96" y2="49" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="52" x2="94.5" y2="52" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+      <line x1="91" y1="55" x2="95.5" y2="55" stroke="#8B7355" stroke-width="0.5" opacity="0.7"/>
+    </g>
+  </g>
+</svg>

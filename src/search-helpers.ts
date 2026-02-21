@@ -223,7 +223,7 @@ export class SearchHelpers {
       (msg) =>
         msg.content.toLowerCase().includes('write') ||
         msg.content.toLowerCase().includes('edit') ||
-        msg.context?.toolsUsed?.includes('Edit')
+        msg.context?.toolsUsed?.includes('Edit'),
     );
 
     const hasReads = messages.some((msg) => msg.context?.toolsUsed?.includes('Read'));
@@ -357,7 +357,7 @@ export class SearchHelpers {
     }
 
     // Add stemming bonus for better recall
-    const stem = (word: string) => word.replace(/(ing|ed|s|ly|tion|ment)$/, '');
+    const stem = (word: string): string => word.replace(/(ing|ed|s|ly|tion|ment)$/, '');
     const stemmed1 = words1.map(stem);
     const stemmed2 = words2.map(stem);
     const stemmedIntersection = stemmed1.filter((w) => stemmed2.includes(w));
@@ -367,10 +367,10 @@ export class SearchHelpers {
     // Boost score for technical queries
     const isTechnical =
       words1.some((w) =>
-        ['error', 'fix', 'build', 'install', 'typescript', 'javascript'].includes(w)
+        ['error', 'fix', 'build', 'install', 'typescript', 'javascript'].includes(w),
       ) ||
       words2.some((w) =>
-        ['error', 'fix', 'build', 'install', 'typescript', 'javascript'].includes(w)
+        ['error', 'fix', 'build', 'install', 'typescript', 'javascript'].includes(w),
       );
     const technicalBoost = isTechnical ? 1.2 : 1.0;
 
@@ -403,11 +403,11 @@ export class SearchHelpers {
       'code',
     ];
     const hasTechMatch = keywords1.some(
-      (k1) => techKeywords.includes(k1) && keywords2.some((k2) => k2.includes(k1))
+      (k1) => techKeywords.includes(k1) && keywords2.some((k2) => k2.includes(k1)),
     );
 
     const sharedKeywords = keywords1.filter((k) =>
-      keywords2.some((k2) => k === k2 || k.includes(k2) || k2.includes(k))
+      keywords2.some((k2) => k === k2 || k.includes(k2) || k2.includes(k)),
     );
 
     return hasTechMatch || sharedKeywords.length >= 2 || sharedKeywords.some((k) => k.length > 6);
@@ -495,7 +495,7 @@ export class SearchHelpers {
 
     if (topFileTypes.length > 0) {
       patterns.add(
-        `Common files: ${topFileTypes.map(([type, count]) => `${type} (${count}x)`).join(', ')}`
+        `Common files: ${topFileTypes.map(([type, count]) => `${type} (${count}x)`).join(', ')}`,
       );
     }
 
@@ -547,7 +547,7 @@ export class SearchHelpers {
     if (patternIsSpecificCode) {
       // Must match the specific error code, not just generic "error" content
       return specificErrorCodes.some(
-        (code) => lowerPattern.includes(code) && lowerContent.includes(code)
+        (code) => lowerPattern.includes(code) && lowerContent.includes(code),
       );
     }
 

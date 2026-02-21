@@ -1,28 +1,29 @@
 // @ts-check
-import eslint from '@eslint/js';
-import tseslint from 'typescript-eslint';
+import eslint from "@eslint/js";
+import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   eslint.configs.recommended,
-  tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
   {
-    files: ['**/*.ts', '**/*.tsx'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
-      // Essential quality rules for MCP servers
-      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
-      '@typescript-eslint/explicit-function-return-type': 'warn',
-      'no-console': 'off', // Allow console for MCP server debugging
-      'max-lines': 'off', // Disabled for complex MCP servers
-      '@typescript-eslint/no-explicit-any': 'off', // Temporarily disabled for release
-      'prefer-const': 'error',
-      'no-var': 'error',
-      'no-async-promise-executor': 'off', // Allow for MCP server patterns
-      '@typescript-eslint/no-require-imports': 'off', // Allow dynamic imports
-      'no-control-regex': 'off', // Allow for text processing
-      'no-useless-escape': 'off' // Allow defensive escaping
-    }
+      // MCP servers use stdout for JSON-RPC — console.log corrupts the stream
+      "no-console": ["error", { allow: ["error"] }],
+      // Allow underscore-prefixed unused args (common in callbacks)
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+      // Warn on missing return types — helps readability
+      "@typescript-eslint/explicit-function-return-type": "warn",
+      // All live code is properly typed; any in dead code (comments) is ignored
+      "@typescript-eslint/no-explicit-any": "error",
+    },
   },
   {
-    ignores: ['dist/', 'node_modules/', '*.js', '*.mjs', 'dxt/']
-  }
+    ignores: ["dist/", "node_modules/", "*.js", "*.mjs"],
+  },
 );

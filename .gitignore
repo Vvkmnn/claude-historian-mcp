@@ -1,25 +1,30 @@
-
 # Dependencies
 node_modules/
-dxt/node_modules/
 
 # Build output
 dist/
-dxt/dist/
+*.tsbuildinfo
 
-# Demo files
-demo.mov
-demo/*.mp4
-palette.png
-vhs/*.mp4
-demo/.claude/
+# Demo artifacts (keep only demo.gif)
 demo/*.cast
+demo/*.mp4
+demo/*.mov
+demo/.claude/
 
 # Local configuration
 .claude/*
 !.claude/skills/
 .mcp.json
 
-# Development documentation
+# Development
+*.log
+*.tmp
+
+# OS
+.DS_Store
+
+# npm
+*.tgz
+
+# Generated docs
 CLAUDE.md
-COMPARISON.md

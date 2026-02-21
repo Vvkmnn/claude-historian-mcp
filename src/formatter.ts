@@ -5,22 +5,25 @@ import {
   FileContext,
   ErrorSolution,
   ToolPattern,
-  PlanResult,
   PlanSearchResult,
+  SessionInfo,
+  CompactSummaryData,
 } from './types.js';
+
+type Scored<T> = T & { score: number };
 
 // Robot faces for each MCP tool operation - these are the signature of Claude Historian!
 const robots = {
-  search: '[⌐■_■]', // search_conversations
-  similar: '[⌐◆_◆]', // find_similar_queries
-  fileContext: '[⌐□_□]', // find_file_context
-  errorSolutions: '[⌐×_×]', // get_error_solutions
-  toolPatterns: '[⌐⎚_⎚]', // find_tool_patterns
-  sessions: '[⌐○_○]', // list_recent_sessions
-  summary: '[⌐◉_◉]', // extract_compact_summary
-  plans: '[⌐▣_▣]', // search_plans
-  config: '[⌐◈_◈]', // search_config (rules, skills, agents, CLAUDE.md)
-  tasks: '[⌐◇_◇]', // search_tasks (task management files)
+  search: '[⌐■_■] 📜', // search_conversations
+  similar: '[⌐◆_◆] 📜', // find_similar_queries
+  fileContext: '[⌐□_□] 📜', // find_file_context
+  errorSolutions: '[⌐×_×] 📜', // get_error_solutions
+  toolPatterns: '[⌐⎚_⎚] 📜', // find_tool_patterns
+  sessions: '[⌐○_○] 📜', // list_recent_sessions
+  summary: '[⌐◉_◉] 📜', // extract_compact_summary
+  plans: '[⌐▣_▣] 📜', // search_plans
+  config: '[⌐◈_◈] 📜', // search_config (rules, skills, agents, CLAUDE.md)
+  tasks: '[⌐◇_◇] 📜', // search_tasks (task management files)
 };
 
 export class BeautifulFormatter {
@@ -125,7 +128,7 @@ export class BeautifulFormatter {
       const remaining = maxLength - errorType[0].length - 3;
       const context = text.substring(
         errorType.index + errorType[0].length,
-        errorType.index + errorType[0].length + remaining
+        errorType.index + errorType[0].length + remaining,
       );
       return errorType[0] + ' ' + context + '...';
     }
@@ -213,7 +216,7 @@ export class BeautifulFormatter {
 
     // Key technical terms
     const keyTerms = text.match(
-      /(npm|git|build|deploy|test|fix|update|install|configure)\s+[\w-]+/gi
+      /(npm|git|build|deploy|test|fix|update|install|configure)\s+[\w-]+/gi,
     );
     if (keyTerms) technical.push(...[...new Set(keyTerms)].slice(0, 2));
 
@@ -235,13 +238,13 @@ export class BeautifulFormatter {
 
     // Concrete actions
     const actions = text.match(
-      /(will|should|need to|going to|implemented|added|updated)\s+([^.!?\n]+)/gi
+      /(will|should|need to|going to|implemented|added|updated)\s+([^.!?\n]+)/gi,
     );
     if (actions) intelligence.push(...actions.slice(0, 2));
 
     // Key outcomes
     const outcomes = text.match(
-      /(success|completed|working|deployed|built|tested)[\s\S]*?(?=[.!?\n]|$)/gi
+      /(success|completed|working|deployed|built|tested)[\s\S]*?(?=[.!?\n]|$)/gi,
     );
     if (outcomes) intelligence.push(...outcomes.slice(0, 1));
 
@@ -338,7 +341,7 @@ export class BeautifulFormatter {
     return `${header}\n\n${JSON.stringify(structured, null, 2)}`;
   }
 
-  private rankAndDeduplicateMessages(messages: any[]): any[] {
+  private rankAndDeduplicateMessages(messages: CompactMessage[]): Scored<CompactMessage>[] {
     // Score messages by information density and uniqueness
     const scored = messages.map((msg) => {
       let score = 0;
@@ -367,10 +370,10 @@ export class BeautifulFormatter {
     });
 
     // Deduplicate similar content
-    const deduplicated: any[] = [];
+    const deduplicated: Scored<CompactMessage>[] = [];
     for (const msg of scored) {
       const isDuplicate = deduplicated.some(
-        (existing) => this.calculateSimilarity(msg.content, existing.content) > 0.8
+        (existing) => this.calculateSimilarity(msg.content, existing.content) > 0.8,
       );
       if (!isDuplicate) {
         deduplicated.push(msg);
@@ -389,7 +392,7 @@ export class BeautifulFormatter {
     return intersection.size / union.size;
   }
 
-  private aggregateContext(message: any): string {
+  private aggregateContext(message: CompactMessage): string {
     const contexts = [];
 
     if (message.projectPath && message.projectPath !== 'unknown') {
@@ -417,7 +420,7 @@ export class BeautifulFormatter {
   formatSimilarQueries(
     queries: CompactMessage[],
     originalQuery: string,
-    _detailLevel: string = 'summary'
+    _detailLevel: string = 'summary',
   ): string {
     const header = `${robots.similar} "${originalQuery}" | ${queries.length} similar`;
 
@@ -427,7 +430,7 @@ export class BeautifulFormatter {
 
     const clusteredQueries = this.clusterBySemantic(queries, originalQuery);
     const highValueQueries = clusteredQueries.filter(
-      (q) => q.relevanceScore && q.relevanceScore > 0.1
+      (q) => q.relevanceScore && q.relevanceScore > 0.1,
     );
 
     const structured = {
@@ -475,7 +478,7 @@ export class BeautifulFormatter {
     contexts: FileContext[],
     filepath: string,
     _detailLevel: string = 'summary',
-    _operationType: string = 'all'
+    _operationType: string = 'all',
   ): string {
     const header = `${robots.fileContext} "${filepath}" | ${contexts.length} operations`;
 
@@ -528,10 +531,10 @@ export class BeautifulFormatter {
 
         return { ...context, score };
       })
-      .sort((a, b) => (b as any).score - (a as any).score);
+      .sort((a, b) => b.score - a.score);
   }
 
-  private selectBestMessage(messages: any[]): any {
+  private selectBestMessage(messages: CompactMessage[]): CompactMessage {
     // Select the message with highest information value
     return messages.reduce((best, current) => {
       const currentType = this.detectContentType(current.content);
@@ -550,7 +553,7 @@ export class BeautifulFormatter {
   }
 
   // Extract actual file changes from Edit tool usage
-  private extractFileChanges(messages: any[], filepath: string): string[] {
+  private extractFileChanges(messages: CompactMessage[], filepath: string): string[] {
     const changes: string[] = [];
     const filename = filepath.split('/').pop() || filepath;
 
@@ -559,7 +562,7 @@ export class BeautifulFormatter {
 
       // Look for Edit tool old_string → new_string patterns
       const editMatch = content.match(
-        /old_string.*?["']([^"']{10,100})["'].*?new_string.*?["']([^"']{10,100})["']/s
+        /old_string.*?["']([^"']{10,100})["'].*?new_string.*?["']([^"']{10,100})["']/s,
       );
       if (editMatch) {
         const oldStr = editMatch[1].substring(0, 50).replace(/\n/g, '\\n');
@@ -577,7 +580,7 @@ export class BeautifulFormatter {
 
       // Look for "added X", "removed X", "updated X" patterns
       const actionMatch = content.match(
-        /(?:added|removed|updated|created|deleted|renamed|fixed)\s+([^.!?\n]{5,60})/i
+        /(?:added|removed|updated|created|deleted|renamed|fixed)\s+([^.!?\n]{5,60})/i,
       );
       if (actionMatch && content.toLowerCase().includes(filename.toLowerCase())) {
         changes.push(actionMatch[0].trim());
@@ -608,7 +611,7 @@ export class BeautifulFormatter {
   formatErrorSolutions(
     solutions: ErrorSolution[],
     errorPattern: string,
-    _detailLevel: string = 'summary'
+    _detailLevel: string = 'summary',
   ): string {
     const header = `${robots.errorSolutions} "${errorPattern}" | ${solutions.length} solutions`;
 
@@ -660,10 +663,10 @@ export class BeautifulFormatter {
 
         return { ...solution, score };
       })
-      .sort((a, b) => (b as any).score - (a as any).score);
+      .sort((a, b) => b.score - a.score);
   }
 
-  private selectBestSolution(solutions: any[]): any {
+  private selectBestSolution(solutions: CompactMessage[]): CompactMessage {
     return solutions.reduce((best, current) => {
       // Prioritize technical solutions over conversational
       const currentType = this.detectContentType(current.content);
@@ -686,7 +689,7 @@ export class BeautifulFormatter {
   formatToolPatterns(
     patterns: ToolPattern[],
     toolName?: string,
-    _patternType: string = 'tools'
+    _patternType: string = 'tools',
   ): string {
     const filter = toolName ? `"${toolName}"` : 'all';
     const header = `${robots.toolPatterns} ${filter} | ${patterns.length} patterns`;
@@ -746,7 +749,7 @@ export class BeautifulFormatter {
 
         return { ...pattern, score };
       })
-      .sort((a, b) => (b as any).score - (a as any).score);
+      .sort((a, b) => b.score - a.score);
   }
 
   private calculateToolEfficiency(pattern: ToolPattern): number {
@@ -779,7 +782,7 @@ export class BeautifulFormatter {
     return practices[0] || '';
   }
 
-  formatRecentSessions(sessions: any[], project?: string): string {
+  formatRecentSessions(sessions: SessionInfo[], project?: string): string {
     const filter = project ? `"${project}"` : 'all';
     const header = `${robots.sessions} ${filter} | ${sessions.length} sessions`;
 
@@ -793,7 +796,7 @@ export class BeautifulFormatter {
     const structured = {
       sessions: topSessions.map((s) => ({
         id: s.session_id?.substring(0, 8) || null,
-        ts: this.formatTimestamp(s.end_time || s.start_time),
+        ts: this.formatTimestamp(s.end_time ?? s.start_time ?? ''),
         duration: s.duration_minutes || 0,
         messages: s.message_count || 0,
         project: s.project_path?.split('/').pop() || null,
@@ -805,7 +808,7 @@ export class BeautifulFormatter {
     return `${header}\n\n${JSON.stringify(structured, null, 2)}`;
   }
 
-  private rankSessionsByProductivity(sessions: any[]): any[] {
+  private rankSessionsByProductivity(sessions: SessionInfo[]): Scored<SessionInfo>[] {
     return sessions
       .map((session) => {
         let score = 0;
@@ -833,10 +836,10 @@ export class BeautifulFormatter {
 
         return { ...session, score };
       })
-      .sort((a, b) => (b as any).score - (a as any).score);
+      .sort((a, b) => b.score - a.score);
   }
 
-  private calculateProductivityScore(session: any): number {
+  private calculateProductivityScore(session: SessionInfo): number {
     const duration = session.duration_minutes || 1;
     const messageCount = session.message_count || 0;
     const density = messageCount / duration;
@@ -845,7 +848,7 @@ export class BeautifulFormatter {
     return Math.min(100, Math.round(density * 5));
   }
 
-  private extractSessionTools(session: any): string[] {
+  private extractSessionTools(session: SessionInfo): string[] {
     // Extract tools from session metadata if available
     const tools = [];
     if (session.tools_used) {
@@ -854,7 +857,7 @@ export class BeautifulFormatter {
     return tools;
   }
 
-  formatCompactSummary(sessions: any[], sessionId?: string): string {
+  formatCompactSummary(sessions: CompactSummaryData[], sessionId?: string): string {
     if (sessions.length === 0) {
       const filter = sessionId ? `"${sessionId}"` : 'latest';
       return `${robots.summary} ${filter}\n\n{"session":null}`;
@@ -868,7 +871,7 @@ export class BeautifulFormatter {
     const structured = {
       session: {
         id: s.session_id?.substring(0, 8) || null,
-        ts: this.formatTimestamp(s.end_time || s.start_time),
+        ts: this.formatTimestamp(s.end_time ?? s.start_time ?? ''),
         duration: s.duration_minutes || 0,
         messages: s.message_count || 0,
         project: s.project_path?.split('/').pop() || null,
@@ -945,7 +948,7 @@ export class BeautifulFormatter {
 
     // Pattern 1: ## Fix or ## Solution section - get first line/bullet
     const fixMatch = content.match(
-      /##\s*(?:Fix|Solution|Resolution)\s*\n+(?:[-*]\s*)?([^\n]{15,200})/i
+      /##\s*(?:Fix|Solution|Resolution)\s*\n+(?:[-*]\s*)?([^\n]{15,200})/i,
     );
     if (fixMatch) {
       const insight = this.cleanInsight(fixMatch[1]);
@@ -954,7 +957,7 @@ export class BeautifulFormatter {
 
     // Pattern 2: ## Approach section - first sentence
     const approachMatch = content.match(
-      /##\s*(?:Approach|Strategy|Method)\s*\n+(?:[-*]\s*)?([^\n]{15,200})/i
+      /##\s*(?:Approach|Strategy|Method)\s*\n+(?:[-*]\s*)?([^\n]{15,200})/i,
     );
     if (approachMatch) {
       const insight = this.cleanInsight(approachMatch[1]);
@@ -963,7 +966,7 @@ export class BeautifulFormatter {
 
     // Pattern 3: First bullet after ## Implementation that starts with capital
     const implMatch = content.match(
-      /##\s*Implementation[^\n]*\n+(?:[-*]\s*)?([A-Z][^\n]{15,200})/i
+      /##\s*Implementation[^\n]*\n+(?:[-*]\s*)?([A-Z][^\n]{15,200})/i,
     );
     if (implMatch) {
       const insight = this.cleanInsight(implMatch[1]);
@@ -979,7 +982,7 @@ export class BeautifulFormatter {
 
     // Pattern 5: "The fix is" or "Solution:" inline
     const inlineMatch = content.match(
-      /(?:the fix is|solution:|approach:|key change:|key decision:)\s*([^\n]{15,200})/i
+      /(?:the fix is|solution:|approach:|key change:|key decision:)\s*([^\n]{15,200})/i,
     );
     if (inlineMatch) {
       const insight = this.cleanInsight(inlineMatch[1]);
@@ -995,10 +998,10 @@ export class BeautifulFormatter {
 
     // Pattern 7: First substantive bullet that describes an action
     const actionBulletMatch = content.match(
-      /\n[-*]\s+(?:Add|Create|Build|Implement|Fix|Update|Change|Remove|Enable|Configure|Use|Set)\s+([^\n]{15,150})/i
+      /\n[-*]\s+(?:Add|Create|Build|Implement|Fix|Update|Change|Remove|Enable|Configure|Use|Set)\s+([^\n]{15,150})/i,
     );
     if (actionBulletMatch) {
-      const insight = this.cleanInsight(actionBulletMatch[0].replace(/^[\n\-\*\s]+/, ''));
+      const insight = this.cleanInsight(actionBulletMatch[0].replace(/^[\n\-*\s]+/, ''));
       if (insight) return insight;
     }
 
