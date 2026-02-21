@@ -7,7 +7,7 @@ npm run format:check || { echo "Format check failed. Run: npm run format"; exit 
 npm run lint || { echo "Lint failed. Run: npm run lint:fix"; exit 1; }
 
 # Type check
-npm run type-check || { echo "Type check failed"; exit 1; }
+npm run typecheck || { echo "Type check failed"; exit 1; }
 
 # Build verification
 npm run build || { echo "Build failed"; exit 1; }
