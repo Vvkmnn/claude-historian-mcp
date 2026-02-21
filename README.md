@@ -2,7 +2,7 @@
 
 # claude-historian-mcp
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for searching your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) conversation history. Find past solutions, track file changes, and learn from previous work.
+An [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for searching your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) conversation history. Find past solutions, track file changes, and learn from previous work.
 
 <br clear="right">
 
@@ -46,9 +46,9 @@ Install this mcp: https://github.com/Vvkmnn/claude-historian-mcp
 }
 ```
 
-That's it; there is **no `npm install` required** as there are no external dependencies or local databases, only search algorithms.
+There is **no `npm install` required** -- no external dependencies or local databases, only search algorithms.
 
-However, in the unlikely event that you pull the wrong package / `npx` registry is out of date, you can force resolution issues in certain environments with:
+However, if `npx` resolves the wrong package, you can force resolution with:
 
 ```bash
 npm install -g claude-historian-mcp
@@ -56,17 +56,18 @@ npm install -g claude-historian-mcp
 
 > **renamed:** This project was renamed from `claude-historian` to `claude-historian-mcp`. Existing users should update your install command and MCP config args to `claude-historian-mcp`.
 
-## skill
+## [skill](.claude/skills/claude-historian)
 
 Optionally, install the skill to teach Claude when to proactively use historian:
 
 ```bash
 npx skills add Vvkmnn/claude-historian-mcp --skill claude-historian --global
+# Optional: add --yes to skip interactive prompt and install to all agents
 ```
 
 This makes Claude automatically check your history before web searches, when encountering errors, or at session start. The MCP works without the skill, but the skill improves discoverability.
 
-## plugin
+## [plugin](https://github.com/Vvkmnn/claude-emporium)
 
 For automatic history search with hooks and commands, install from the [claude-emporium](https://github.com/Vvkmnn/claude-emporium) marketplace:
 
@@ -405,6 +406,14 @@ How [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp) [work
 - **[Technical content prioritization](https://en.wikipedia.org/wiki/Information_extraction)** ([BeautifulFormatter](https://github.com/Vvkmnn/claude-historian-mcp/blob/master/src/formatter.ts#L26)): Code blocks, errors, and file paths get full preservation
 - **[Query similarity clustering](https://en.wikipedia.org/wiki/Cluster_analysis)** ([findSimilarQueries](https://github.com/Vvkmnn/claude-historian-mcp/blob/master/src/search.ts#L912)): Semantic expansion and pattern grouping for related questions
 
+**Design principles:**
+
+- **Universal engine** -- single search backend for all Claude Code conversations
+- **Parallel processing** -- concurrent file scanning across session directories
+- **Semantic expansion** -- query synonyms and related terms for better recall
+- **Zero dependencies** -- only `@modelcontextprotocol/sdk`, no databases required
+- **Offline** -- never leaves your machine, scans local JSONL files only
+
 **File access:**
 
 - Reads from: `~/.claude/conversations/`
@@ -430,13 +439,13 @@ Every conversation history tool either loads context always (burning tokens when
 | **Raw conversations**   | **Yes**                 | No (summaries only)     | No (compressed observations)     | Yes                 | Yes (filtered)               |
 | **Maintenance**         | **Zero**                | Zero                    | Worker daemons, migrations       | Skill config        | Index rebuilds               |
 
-**[Claude Memory](https://docs.anthropic.com/en/docs/claude-code/memory)** — Claude's built-in memory (`CLAUDE.md` + auto-memory). Persists project rules and preferences across sessions. Forward-looking ("always use ESM imports"); not conversation search. **Complementary**: memory for rules, historian for past solutions.
+**[Claude Memory](https://docs.anthropic.com/en/docs/claude-code/memory)** -- Claude's built-in memory (`CLAUDE.md` + auto-memory). Persists project rules and preferences across sessions. Forward-looking ("always use ESM imports"); not conversation search. **Complementary**: memory for rules, historian for past solutions.
 
-**[claude-mem](https://github.com/thedotmack/claude-mem)** — Plugin that captures observations via lifecycle hooks, compresses them into SQLite + Chroma, and loads context every session. Requires Bun, Python, and a background worker on port 37777. Real-world testing (270+ sessions): 95% of sessions never query history — always-on tools pay 5-8k tokens per session regardless. Historian pays 0 tokens idle, 500-2k per query, saving ~475k tokens over 100 sessions. Known issues: creates stub session files that break `--continue`, worker daemon version conflicts, security hooks blocking valid edits.
+**[claude-mem](https://github.com/thedotmack/claude-mem)** -- Plugin that captures observations via lifecycle hooks, compresses them into SQLite + Chroma, and loads context every session. Requires Bun, Python, and a background worker on port 37777. Real-world testing (270+ sessions): 95% of sessions never query history -- always-on tools pay 5-8k tokens per session regardless. Historian pays 0 tokens idle, 500-2k per query, saving ~475k tokens over 100 sessions. Known issues: creates stub session files that break `--continue`, worker daemon version conflicts, security hooks blocking valid edits.
 
-**[deja](https://github.com/kateleext/deja)** — Python skill that indexes sessions by episodes and accomplishments. Uses weighted signal ranking (todos > files > text). Requires Python and TodoWrite integration.
+**[deja](https://github.com/kateleext/deja)** -- Python skill that indexes sessions by episodes and accomplishments. Uses weighted signal ranking (todos > files > text). Requires Python and TodoWrite integration.
 
-**[conversation-search](https://github.com/ticpu/claude-conversation-search-mcp)** — Rust MCP server using Tantivy BM25 full-text search. Fast indexing (~1000 conversations/second) but requires Rust toolchain and persistent disk index.
+**[conversation-search](https://github.com/ticpu/claude-conversation-search-mcp)** -- Rust MCP server using Tantivy BM25 full-text search. Fast indexing (~1000 conversations/second) but requires Rust toolchain and persistent disk index.
 
 ## desktop
 
@@ -458,7 +467,7 @@ npm test
 
 - **Node.js**: >=20.0.0 (ES modules)
 - **Runtime**: `@modelcontextprotocol/sdk`
-- **Zero external databases** — works with `npx`
+- **Zero external databases** -- works with `npx`
 
 **Development workflow:**
 
@@ -498,6 +507,10 @@ Learn from examples:
 
 <hr>
 
-<a href="https://en.wikipedia.org/wiki/Cesare_Maccari"><img src="logo/appius-claudius.jpg" alt="Appius Claudius Caecus in the Senate — Cesare Maccari" width="100%"></a>
+<a href="https://en.wikipedia.org/wiki/Cesare_Maccari"><img src="logo/appius-claudius.jpg" alt="Appius Claudius Caecus in the Senate -- Cesare Maccari" width="100%"></a>
+
+<p align="center">
 
 _**[Appius Claudius Caecus in the Senate](https://en.wikipedia.org/wiki/Cesare_Maccari)** by **[Cesare Maccari](https://en.wikipedia.org/wiki/Cesare_Maccari)** (1888). Roman statesman and father of Latin prose._
+
+</p>
