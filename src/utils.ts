@@ -4,16 +4,20 @@ import { homedir } from 'os';
 import { constants } from 'fs';
 import { ClaudeMessage, MessageContentBlock } from './types.js';
 
+export function getClaudeBasePath(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+}
+
 export function getClaudeProjectsPath(): string {
-  return join(homedir(), '.claude', 'projects');
+  return join(getClaudeBasePath(), 'projects');
 }
 
 export function getClaudePlansPath(): string {
-  return join(homedir(), '.claude', 'plans');
+  return join(getClaudeBasePath(), 'plans');
 }
 
 export function getClaudeTasksPath(): string {
-  return join(homedir(), '.claude', 'tasks');
+  return join(getClaudeBasePath(), 'tasks');
 }
 
 export async function findPlanFiles(): Promise<string[]> {
@@ -58,7 +62,7 @@ export async function walkDirectory(dir: string): Promise<string[]> {
 export async function findClaudeMarkdownFiles(): Promise<{ path: string; category: string }[]> {
   try {
     const results: { path: string; category: string }[] = [];
-    const claudeDir = join(homedir(), '.claude');
+    const claudeDir = getClaudeBasePath();
 
     // Search global ~/.claude/ directory
     const globalCategories = ['rules', 'skills', 'agents', 'plans'];
