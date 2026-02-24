@@ -5,7 +5,7 @@ import { constants } from 'fs';
 import { ClaudeMessage, MessageContentBlock } from './types.js';
 
 export function getClaudeBasePath(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 }
 
 export function getClaudeProjectsPath(): string {
