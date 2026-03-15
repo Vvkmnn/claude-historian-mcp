@@ -1,5 +1,6 @@
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
+import { stat, readFile } from 'fs/promises';
 import { join } from 'path';
 import { ClaudeMessage, CompactMessage, ConversationSession } from './types.js';
 import {
@@ -9,6 +10,10 @@ import {
   calculateRelevanceScore,
   formatTimestamp,
 } from './utils.js';
+
+// Files under this size use readFile + split (2x faster than streaming).
+// Benchmarked crossover at ~400KB — readline's event-loop overhead dominates below.
+const SMALL_FILE_THRESHOLD = 400_000;
 
 export class ConversationParser {
   private sessions: Map<string, ConversationSession> = new Map();
@@ -23,6 +28,15 @@ export class ConversationParser {
     const messages: CompactMessage[] = [];
     const filePath = join(getClaudeProjectsPath(), projectDir, filename);
 
+    // Pre-compute query words ONCE for the entire file (used by both pre-filter
+    // and calculateRelevanceScore). Avoids recomputing per-message.
+    const queryWords = query
+      ? query
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w: string) => w.length > 2)
+      : [];
+
     // Pre-compute lowercase terms for line-level pre-filter.
     // Two-phase search: cheap raw-string check on each JSONL line (~10x faster
     // than JSON.parse), then full parse only for lines containing terms.
@@ -31,74 +45,93 @@ export class ConversationParser {
     //
     // preFilterTerms lets non-query methods (getErrorSolutions, getToolPatterns)
     // skip irrelevant lines without affecting scoring or context extraction.
-    const queryTerms =
-      preFilterTerms ||
-      (query
-        ? query
-            .toLowerCase()
-            .split(/\s+/)
-            .filter((w) => w.length > 2)
-        : []);
+    const queryTerms = preFilterTerms || queryWords;
 
-    try {
-      const fileStream = createReadStream(filePath, { encoding: 'utf8' });
-      const rl = createInterface({
-        input: fileStream,
-        crlfDelay: Infinity,
-      });
+    const processLine = (line: string): void => {
+      if (!line.trim()) return;
 
-      for await (const line of rl) {
-        if (!line.trim()) continue;
+      // Line-level pre-filter: skip JSON.parse for lines that don't contain
+      // any query term. This eliminates 80-95% of JSON.parse calls.
+      if (queryTerms.length > 0) {
+        const lineLower = line.toLowerCase();
+        if (!queryTerms.some((term) => lineLower.includes(term))) {
+          return;
+        }
+      }
 
-        // Line-level pre-filter: skip JSON.parse for lines that don't contain
-        // any query term. This eliminates 80-95% of JSON.parse calls.
-        if (queryTerms.length > 0) {
-          const lineLower = line.toLowerCase();
-          if (!queryTerms.some((term) => lineLower.includes(term))) {
-            continue;
-          }
+      try {
+        const claudeMessage = JSON.parse(line) as ClaudeMessage;
+
+        // Apply time filter if provided
+        if (timeFilter && !timeFilter(claudeMessage.timestamp)) {
+          return;
         }
 
-        try {
-          const claudeMessage = JSON.parse(line) as ClaudeMessage;
+        const content = extractContentFromMessage(claudeMessage.message || {});
+        if (!content) return;
 
-          // Apply time filter if provided
-          if (timeFilter && !timeFilter(claudeMessage.timestamp)) {
-            continue;
+        const relevanceScore = query
+          ? calculateRelevanceScore(claudeMessage, query, projectDir, content, queryWords)
+          : 0;
+
+        // Defer expensive extractContext (31 regexes) for low-scoring messages.
+        // Messages scoring <2 rarely make the final cut. Context fields (toolsUsed,
+        // errorPatterns, etc.) are used as soft 1.3x boosts — missing them on
+        // marginal matches has negligible recall impact.
+        const context =
+          query && relevanceScore < 2 ? undefined : this.extractContext(claudeMessage, content);
+
+        const msg: CompactMessage = {
+          uuid: claudeMessage.uuid,
+          timestamp: formatTimestamp(claudeMessage.timestamp),
+          type: claudeMessage.type,
+          content: this.smartContentPreservation(content, this.getContentLimit(content)),
+          sessionId: claudeMessage.sessionId,
+          projectPath: decodeProjectPath(projectDir),
+          relevanceScore,
+          context,
+        };
+        if (claudeMessage.slug) {
+          msg.sessionSlug = claudeMessage.slug;
+        }
+        messages.push(msg);
+
+        this.updateSessionInfo(claudeMessage, projectDir);
+      } catch {
+        // Gracefully handle corrupted JSONL lines — skip silently
+      }
+    };
+
+    try {
+      // Fast path: readFile + split for small files (90% of dataset).
+      // Stream setup overhead (fd open, buffer alloc, event loop) dominates for tiny files.
+      const fileStats = await stat(filePath);
+
+      if (fileStats.size < SMALL_FILE_THRESHOLD) {
+        const content = await readFile(filePath, 'utf-8');
+        // File-level pre-filter: if query terms exist and NONE appear in the
+        // whole file, skip line splitting entirely. One toLowerCase() on the
+        // whole buffer is far cheaper than per-line toLowerCase + includes.
+        if (queryTerms.length > 0) {
+          const contentLower = content.toLowerCase();
+          if (!queryTerms.some((term) => contentLower.includes(term))) {
+            return messages;
           }
+        }
+        const lines = content.split('\n');
+        for (const line of lines) {
+          processLine(line);
+        }
+      } else {
+        // Stream path for large files (>64KB)
+        const fileStream = createReadStream(filePath, { encoding: 'utf8' });
+        const rl = createInterface({
+          input: fileStream,
+          crlfDelay: Infinity,
+        });
 
-          const content = extractContentFromMessage(claudeMessage.message || {});
-          if (!content) continue;
-
-          const relevanceScore = query
-            ? calculateRelevanceScore(claudeMessage, query, projectDir)
-            : 0;
-
-          // Defer expensive extractContext (31 regexes) for irrelevant messages.
-          // Messages with score=0 are filtered out by callers anyway — no point
-          // running file pattern, tool usage, error, insight, and code extraction.
-          const context =
-            query && relevanceScore === 0 ? undefined : this.extractContext(claudeMessage, content);
-
-          const compactMessage: CompactMessage = {
-            uuid: claudeMessage.uuid,
-            timestamp: formatTimestamp(claudeMessage.timestamp),
-            type: claudeMessage.type,
-            content: this.smartContentPreservation(content, this.getContentLimit(content)),
-            sessionId: claudeMessage.sessionId,
-            projectPath: decodeProjectPath(projectDir),
-            relevanceScore,
-            context,
-          };
-
-          messages.push(compactMessage);
-
-          // Track session info
-          this.updateSessionInfo(claudeMessage, projectDir);
-        } catch (parseError) {
-          // Gracefully handle corrupted JSONL lines
-          console.error(`Skipping malformed line in ${filename}:`, parseError);
-          continue;
+        for await (const line of rl) {
+          processLine(line);
         }
       }
     } catch (error) {
@@ -145,9 +178,9 @@ export class ConversationParser {
       message.message.content
         .filter((item) => item.type === 'tool_use' && item.name)
         .forEach((item) => {
-          // Extract tool name
-          const cleanName = item.name!.replace(/^mcp__.*?__/, '').replace(/[_-]/g, '');
-          if (cleanName) tools.add(cleanName);
+          // Preserve full tool name — MCP tools need server identity for search
+          // e.g. mcp__tmux__create-session stays as-is, Edit stays as-is
+          tools.add(item.name!);
 
           // Extract file paths from tool parameters
           if (item.input) {
@@ -166,6 +199,13 @@ export class ConversationParser {
               if (!context.bashCommands) context.bashCommands = [];
               context.bashCommands.push(input.command.substring(0, 100));
             }
+            // Extract Edit diffs for file change visibility
+            if (item.name === 'Edit' && input.old_string && input.new_string) {
+              if (!context.editDiffs) context.editDiffs = [];
+              const oldStr = (input.old_string as string).substring(0, 60).replace(/\n/g, '\\n');
+              const newStr = (input.new_string as string).substring(0, 60).replace(/\n/g, '\\n');
+              context.editDiffs.push(`${oldStr} → ${newStr}`);
+            }
           }
         });
     }
@@ -178,7 +218,7 @@ export class ConversationParser {
     const toolPatterns = [
       /\[Tool:\s*(\w+)\]/gi, // Matches [Tool: Read], [Tool: Edit], etc.
       /Called the (\w+) tool/gi, // Matches "Called the Read tool"
-      /\bmcp__[\w-]+__([\w-]+)/gi, // MCP tool calls
+      /\b(mcp__[\w-]+__[\w-]+)/gi, // MCP tool calls — capture full name
       /Result of calling the (\w+) tool/gi, // Tool results
       /tool_use.*?"name":\s*"([^"]+)"/gi, // JSON tool_use name extraction
     ];
@@ -189,9 +229,8 @@ export class ConversationParser {
       let match;
       while ((match = pattern.exec(content)) !== null) {
         if (match[1]) {
-          // Extract the captured group (tool name)
-          const cleanName = match[1].replace(/^mcp__.*?__/, '').replace(/[_-]/g, '');
-          if (cleanName) tools.add(cleanName);
+          // Preserve full tool name (including MCP prefix)
+          tools.add(match[1]);
         }
         // Prevent infinite loop on zero-length matches
         if (match.index === pattern.lastIndex) {
@@ -254,6 +293,12 @@ export class ConversationParser {
     const actionItems = this.extractActionItems(content);
     if (actionItems.length > 0) {
       context.actionItems = actionItems;
+    }
+
+    // Extract progress indicators (plan status, task completion)
+    const progressInfo = this.extractProgressInfo(content);
+    if (progressInfo.length > 0) {
+      context.progressInfo = progressInfo;
     }
 
     return Object.keys(context).length > 0 ? context : undefined;
@@ -526,6 +571,29 @@ export class ConversationParser {
     });
 
     return actions.slice(0, 4); // Top 4 action items
+  }
+
+  private extractProgressInfo(content: string): string[] {
+    const progress: string[] = [];
+    const progressPatterns = [
+      /\*?\*?Progress:\s*(\d+\/\d+[^\n]*)/gi,
+      /##\s*(Done|In Progress|Up Next|Completed|Discovered)\b[^\n]*/gi,
+      /- \[x\]\s+([^\n]{10,150})/g,
+      /- \[ \]\s+([^\n]{10,150})/g,
+      /(?:completed|finished|done with|implemented)\s+(?:step|task|item)\s*\d*[:\s]*([^\n.]{10,100})/gi,
+    ];
+
+    progressPatterns.forEach((pattern) => {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(content)) !== null) {
+        const line = (match[1] || match[0]).trim();
+        if (line.length > 5 && !progress.some((p) => p.includes(line.substring(0, 20)))) {
+          progress.push(line);
+        }
+      }
+    });
+
+    return progress.slice(0, 8);
   }
 
   // Extract the most valuable content by prioritizing sentences with high information density

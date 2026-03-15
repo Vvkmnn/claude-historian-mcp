@@ -12,6 +12,10 @@ export const MAJORITY_MATCH_BONUS = 4; // 60%+ of query words match
 export const TOOL_USAGE_SCORE = 5; // Message uses tools
 export const FILE_REFERENCE_SCORE = 3; // Contains file paths
 export const PROJECT_MATCH_SCORE = 5; // Matches project context
+export const PROJECT_NAME_BOOST = 3; // Boost when query term matches project directory name
+
+// Scoring caps
+export const MAX_MULTIPLICATIVE_BOOST = 4; // Cap for per-term multiplicative boost
 
 // Core tech patterns - specific frameworks/tools that MUST match for relevance
 // These are "must-match" terms: if query contains them, content MUST also contain them

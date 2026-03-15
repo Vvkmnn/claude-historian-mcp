@@ -14,6 +14,7 @@ import {
   ToolPattern,
   CompactSummaryData,
 } from './types.js';
+import { findProjectDirectories } from './utils.js';
 
 /* DEAD: Desktop imports — claudeDesktopAvailable hardcoded false (issue #70)
 import {
@@ -111,10 +112,17 @@ export class UniversalHistorySearchEngine {
   async getErrorSolutions(
     errorPattern: string,
     limit?: number,
+    project?: string,
+    timeframe?: string,
   ): Promise<{ source: string; results: ErrorSolution[]; enhanced: boolean }> {
     await this.initialize();
 
-    const claudeCodeResults = await this.claudeCodeEngine.getErrorSolutions(errorPattern, limit);
+    const claudeCodeResults = await this.claudeCodeEngine.getErrorSolutions(
+      errorPattern,
+      limit,
+      project,
+      timeframe,
+    );
 
     return {
       source: 'claude-code',
@@ -125,11 +133,16 @@ export class UniversalHistorySearchEngine {
 
   async getRecentSessions(
     limit?: number,
-    _project?: string,
+    project?: string,
+    timeframe?: string,
   ): Promise<{ source: string; results: SessionInfo[]; enhanced: boolean }> {
     await this.initialize();
 
-    const claudeCodeSessions = await this.claudeCodeEngine.getRecentSessions(limit || 10);
+    const claudeCodeSessions = await this.claudeCodeEngine.getRecentSessions(
+      limit || 10,
+      project,
+      timeframe,
+    );
 
     return {
       source: 'claude-code',
@@ -141,10 +154,17 @@ export class UniversalHistorySearchEngine {
   async getToolPatterns(
     toolName?: string,
     limit?: number,
+    project?: string,
+    timeframe?: string,
   ): Promise<{ source: string; results: ToolPattern[]; enhanced: boolean }> {
     await this.initialize();
 
-    const claudeCodePatterns = await this.claudeCodeEngine.getToolPatterns(toolName, limit || 12);
+    const claudeCodePatterns = await this.claudeCodeEngine.getToolPatterns(
+      toolName,
+      limit || 12,
+      project,
+      timeframe,
+    );
 
     return {
       source: 'claude-code',
@@ -158,11 +178,9 @@ export class UniversalHistorySearchEngine {
   async generateCompactSummary(
     sessionId: string,
     maxMessages?: number,
-    _focus?: string,
+    focus?: string,
   ): Promise<{ source: string; results: CompactSummaryData; enhanced: boolean }> {
     await this.initialize();
-
-    const allSessions = await this.claudeCodeEngine.getRecentSessions(20);
 
     const emptySummary: CompactSummaryData = {
       session_id: sessionId,
@@ -177,25 +195,40 @@ export class UniversalHistorySearchEngine {
       key_decisions: [],
     };
 
-    // Support "latest" keyword - resolve to most recent session
+    // Support "latest" keyword — still needs getRecentSessions(1)
     let resolvedSessionId = sessionId;
     if (sessionId.toLowerCase() === 'latest') {
-      if (allSessions.length > 0) {
-        resolvedSessionId = allSessions[0].session_id;
+      const recent = await this.claudeCodeEngine.getRecentSessions(1);
+      if (recent.length > 0) {
+        resolvedSessionId = recent[0].session_id;
       } else {
         return { source: 'claude-code', results: emptySummary, enhanced: false };
       }
     }
 
-    const sessionData = allSessions.find(
-      (s) =>
-        s.session_id === resolvedSessionId ||
-        s.session_id.startsWith(resolvedSessionId) ||
-        resolvedSessionId.includes(s.session_id) ||
-        s.session_id.includes(resolvedSessionId.replace(/^.*\//, '')),
-    );
+    // Direct lookup: scan project directories for ${sessionId}.jsonl
+    // instead of only searching the 20 most recent sessions (old bug).
+    const projectDirs = await findProjectDirectories();
+    let foundMessages: CompactMessage[] = [];
+    let foundProjectDir = '';
 
-    if (!sessionData) {
+    for (const projectDir of projectDirs) {
+      try {
+        const messages = await this.claudeCodeEngine.getSessionMessages(
+          projectDir,
+          resolvedSessionId,
+        );
+        if (messages.length > 0) {
+          foundMessages = messages;
+          foundProjectDir = projectDir;
+          break;
+        }
+      } catch {
+        // Session file not in this project dir, continue
+      }
+    }
+
+    if (foundMessages.length === 0) {
       return {
         source: 'claude-code',
         results: { ...emptySummary, session_id: resolvedSessionId },
@@ -203,24 +236,48 @@ export class UniversalHistorySearchEngine {
       };
     }
 
-    const messages = await this.claudeCodeEngine.getSessionMessages(
-      sessionData.project_dir,
-      sessionData.session_id,
-    );
-    const sessionMessages = messages.slice(0, maxMessages || 100);
+    const decodedPath = foundProjectDir.replace(/-/g, '/');
+    const sessionMessages = foundMessages.slice(0, maxMessages || 100);
+
+    const startTime = sessionMessages[0]?.timestamp;
+    const endTime = sessionMessages[sessionMessages.length - 1]?.timestamp;
+    let durationMinutes = 0;
+    if (startTime && endTime) {
+      durationMinutes = Math.round(
+        (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000,
+      );
+    }
 
     const richSummary: CompactSummaryData = {
-      session_id: sessionData.session_id,
-      end_time: sessionData.end_time,
-      start_time: sessionData.start_time,
-      duration_minutes: sessionData.duration_minutes || 0,
+      session_id: resolvedSessionId,
+      end_time: endTime,
+      start_time: startTime,
+      duration_minutes: durationMinutes,
       message_count: sessionMessages.length,
-      project_path: sessionData.project_path,
+      project_path: decodedPath,
       tools_used: this.extractToolsFromMessages(sessionMessages),
       files_modified: this.extractFilesFromMessages(sessionMessages),
       accomplishments: this.extractAccomplishmentsFromMessages(sessionMessages),
       key_decisions: this.extractDecisionsFromMessages(sessionMessages),
     };
+
+    // Focus filtering: narrow output to specific aspects
+    const f = focus?.toLowerCase();
+    if (f && f !== 'all') {
+      if (f === 'tools') {
+        richSummary.accomplishments = [];
+        richSummary.key_decisions = [];
+        richSummary.files_modified = [];
+      } else if (f === 'files') {
+        richSummary.tools_used = [];
+        richSummary.accomplishments = [];
+        richSummary.key_decisions = [];
+      } else if (f === 'solutions') {
+        richSummary.tools_used = [];
+        richSummary.files_modified = [];
+        // Keep accomplishments + key_decisions (insights/fixes)
+      }
+    }
 
     return {
       source: 'claude-code',

@@ -13,6 +13,20 @@ import { BeautifulFormatter } from './formatter.js';
 import { UniversalHistorySearchEngine } from './universal-engine.js';
 import { CompactMessage } from './types.js';
 
+// Migration map: old tool names → new invocation hints
+const MIGRATION_HINTS: Record<string, string> = {
+  search_conversations: 'Tool renamed → search(scope: "conversations")',
+  find_file_context: 'Tool renamed → search(scope: "files", filepath: "...")',
+  find_similar_queries: 'Tool renamed → search(scope: "similar")',
+  get_error_solutions: 'Tool renamed → search(scope: "errors")',
+  search_plans: 'Tool renamed → search(scope: "plans")',
+  search_config: 'Tool renamed → search(scope: "config")',
+  search_tasks: 'Tool renamed → search(scope: "tasks")',
+  list_recent_sessions: 'Tool renamed → search(scope: "sessions")',
+  find_tool_patterns: 'Tool renamed → search(scope: "tools")',
+  extract_compact_summary: 'Tool renamed → inspect(session_id: "...")',
+};
+
 class ClaudeHistorianServer {
   private server: Server;
   private searchEngine: HistorySearchEngine;
@@ -23,7 +37,7 @@ class ClaudeHistorianServer {
     this.server = new Server(
       {
         name: 'claude-historian',
-        version: '1.0.0',
+        version: '1.0.5',
       },
       {
         capabilities: {
@@ -43,146 +57,64 @@ class ClaudeHistorianServer {
       return {
         tools: [
           {
-            name: 'search_conversations',
+            name: 'search',
             description:
-              'Search through Claude Code conversation history, .claude files (rules, skills, agents, plans, CLAUDE.md), and task management data with smart insights',
+              'Search through Claude Code conversation history, .claude files (rules, skills, agents, plans, CLAUDE.md), memories, and task management data with smart insights',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
-                  description: 'Search query to find relevant conversations',
+                  description:
+                    'Search query to find relevant conversations. Optional for browse-mode scopes (sessions, tools).',
                 },
-                project: {
+                scope: {
                   type: 'string',
-                  description: 'Optional project name to filter results',
+                  description:
+                    'Search scope: all (default), conversations, files, errors, plans, config, tasks, similar, sessions, tools, memories',
+                  enum: [
+                    'all',
+                    'conversations',
+                    'files',
+                    'errors',
+                    'plans',
+                    'config',
+                    'tasks',
+                    'similar',
+                    'sessions',
+                    'tools',
+                    'memories',
+                  ],
+                  default: 'all',
                 },
-                timeframe: {
+                detail_level: {
                   type: 'string',
-                  description: 'Time range filter (today, week, month)',
+                  description: 'Response detail: summary (default), detailed, raw',
+                  enum: ['summary', 'detailed', 'raw'],
+                  default: 'summary',
                 },
                 limit: {
                   type: 'number',
                   description: 'Maximum number of results (default: 10)',
                   default: 10,
                 },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['query'],
-            },
-          },
-          {
-            name: 'find_file_context',
-            description:
-              'Find all conversations, .claude files, and task references related to a specific file',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                filepath: {
-                  type: 'string',
-                  description: 'File path to search for in conversation history',
-                },
-                operation_type: {
-                  type: 'string',
-                  description: 'Filter by operation: read, edit, create, or all',
-                  enum: ['read', 'edit', 'create', 'all'],
-                  default: 'all',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 15)',
-                  default: 15,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['filepath'],
-            },
-          },
-          {
-            name: 'find_similar_queries',
-            description: 'Find previous similar questions or queries with enhanced matching',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Query to find similar previous questions',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 8)',
-                  default: 8,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['query'],
-            },
-          },
-          {
-            name: 'get_error_solutions',
-            description: 'Find solutions for specific errors with enhanced matching',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                error_pattern: {
-                  type: 'string',
-                  description: 'Error message or pattern to search for solutions',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 8)',
-                  default: 8,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['error_pattern'],
-            },
-          },
-          {
-            name: 'list_recent_sessions',
-            description: 'Browse recent sessions with smart activity detection and summaries',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of sessions (default: 10)',
-                  default: 10,
-                },
                 project: {
                   type: 'string',
-                  description: 'Optional project name to filter sessions',
+                  description: 'Optional project name to filter results',
                 },
-                include_summary: {
-                  type: 'boolean',
-                  description: 'Include intelligent session summaries (default: true)',
-                  default: true,
+                filepath: {
+                  type: 'string',
+                  description: 'File path for scope: "files"',
+                },
+                timeframe: {
+                  type: 'string',
+                  description: 'Time range filter (today, week, month)',
                 },
               },
             },
           },
           {
-            name: 'extract_compact_summary',
+            name: 'inspect',
             description: 'Get intelligent summary of a conversation session with key insights',
             inputSchema: {
               type: 'object',
@@ -191,10 +123,11 @@ class ClaudeHistorianServer {
                   type: 'string',
                   description: 'Session ID to summarize',
                 },
-                max_messages: {
-                  type: 'number',
-                  description: 'Maximum messages to analyze (default: 10)',
-                  default: 10,
+                detail_level: {
+                  type: 'string',
+                  description: 'Response detail: summary (default), detailed, raw',
+                  enum: ['summary', 'detailed', 'raw'],
+                  default: 'summary',
                 },
                 focus: {
                   type: 'string',
@@ -202,110 +135,13 @@ class ClaudeHistorianServer {
                   enum: ['solutions', 'tools', 'files', 'all'],
                   default: 'all',
                 },
+                max_messages: {
+                  type: 'number',
+                  description: 'Maximum messages to analyze (default: 10)',
+                  default: 10,
+                },
               },
               required: ['session_id'],
-            },
-          },
-          {
-            name: 'find_tool_patterns',
-            description: 'Analyze tool usage patterns, workflows, and successful practices',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                tool_name: {
-                  type: 'string',
-                  description: 'Optional specific tool name to analyze',
-                },
-                pattern_type: {
-                  type: 'string',
-                  description: 'Type of patterns: tools, workflows, or solutions',
-                  enum: ['tools', 'workflows', 'solutions'],
-                  default: 'tools',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of patterns (default: 12)',
-                  default: 12,
-                },
-              },
-            },
-          },
-          {
-            name: 'search_plans',
-            description:
-              'Search Claude Code plan files for past implementation approaches, decisions, and patterns',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Search query for plan content',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 10)',
-                  default: 10,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail level',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['query'],
-            },
-          },
-          {
-            name: 'search_config',
-            description:
-              'Search .claude configuration files (rules, skills, agents, plans, CLAUDE.md) for guidance and patterns',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Search query for config content',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 10)',
-                  default: 10,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail level',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['query'],
-            },
-          },
-          {
-            name: 'search_tasks',
-            description:
-              'Search task management data for pending, completed, and in-progress tasks',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Search query for task content',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 10)',
-                  default: 10,
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail level',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-              },
-              required: ['query'],
             },
           },
         ],
@@ -316,181 +152,31 @@ class ClaudeHistorianServer {
       try {
         const { name, arguments: args } = request.params;
 
+        // Migration layer: old tool names return helpful errors
+        if (MIGRATION_HINTS[name]) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: MIGRATION_HINTS[name],
+              },
+            ],
+            isError: true,
+          };
+        }
+
         switch (name) {
-          case 'search_conversations': {
-            const universalResult = await this.universalEngine.searchConversations(
-              args?.query as string,
-              args?.project as string,
-              args?.timeframe as string,
-              (args?.limit as number) || 10,
-            );
+          case 'search':
+            return await this.handleSearch(args || {});
 
-            const detailLevel = (args?.detail_level as string) || 'summary';
-            const formattedResult = this.formatter.formatSearchConversations(
-              universalResult.results,
-              detailLevel,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'find_file_context': {
-            const universalResult = await this.universalEngine.findFileContext(
-              args?.filepath as string,
-              (args?.limit as number) || 15,
-            );
-
-            const detailLevel = (args?.detail_level as string) || 'summary';
-            const operationType = (args?.operation_type as string) || 'all';
-            const formattedResult = this.formatter.formatFileContext(
-              universalResult.results,
-              args?.filepath as string,
-              detailLevel,
-              operationType,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'find_similar_queries': {
-            const universalResult = await this.universalEngine.findSimilarQueries(
-              args?.query as string,
-              (args?.limit as number) || 8,
-            );
-
-            const detailLevel = (args?.detail_level as string) || 'summary';
-            const formattedResult = this.formatter.formatSimilarQueries(
-              universalResult.results,
-              args?.query as string,
-              detailLevel,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'get_error_solutions': {
-            const universalResult = await this.universalEngine.getErrorSolutions(
-              args?.error_pattern as string,
-              (args?.limit as number) || 8,
-            );
-
-            const detailLevel = (args?.detail_level as string) || 'summary';
-            const formattedResult = this.formatter.formatErrorSolutions(
-              universalResult.results,
-              args?.error_pattern as string,
-              detailLevel,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'list_recent_sessions': {
-            const limit = (args?.limit as number) || 10;
-            const project = args?.project as string;
-
-            const universalResult = await this.universalEngine.getRecentSessions(limit, project);
-            const formattedResult = this.formatter.formatRecentSessions(
-              universalResult.results,
-              project,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'extract_compact_summary': {
-            const sessionId = args?.session_id as string;
-            const maxMessages = (args?.max_messages as number) || 10;
-            const focus = (args?.focus as string) || 'all';
-
-            const universalResult = await this.universalEngine.generateCompactSummary(
-              sessionId,
-              maxMessages,
-              focus,
-            );
-            const formattedResult = this.formatter.formatCompactSummary(
-              [universalResult.results],
-              sessionId,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'find_tool_patterns': {
-            const universalResult = await this.universalEngine.getToolPatterns(
-              args?.tool_name as string,
-              (args?.limit as number) || 12,
-            );
-
-            const patternType = (args?.pattern_type as string) || 'tools';
-            const formattedResult = this.formatter.formatToolPatterns(
-              universalResult.results,
-              args?.tool_name as string,
-              patternType,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'search_plans': {
-            const query = args?.query as string;
-            const limit = (args?.limit as number) || 10;
-            const detailLevel = (args?.detail_level as string) || 'summary';
-
-            const result = await this.universalEngine.searchPlans(query, limit);
-            const formattedResult = this.formatter.formatPlanSearch(
-              { searchQuery: query, plans: result.results },
-              detailLevel,
-            );
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'search_config': {
-            const query = args?.query as string;
-            const limit = (args?.limit as number) || 10;
-            const detailLevel = (args?.detail_level as string) || 'summary';
-
-            const result = await this.searchEngine.searchConfig(query, limit);
-            const formattedResult = this.formatter.formatConfigSearch(result, detailLevel);
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
-
-          case 'search_tasks': {
-            const query = args?.query as string;
-            const limit = (args?.limit as number) || 10;
-            const detailLevel = (args?.detail_level as string) || 'summary';
-
-            const result = await this.searchEngine.searchTasks(query, limit);
-            const formattedResult = this.formatter.formatTaskSearch(result, detailLevel);
-
-            return {
-              content: [{ type: 'text', text: formattedResult }],
-            };
-          }
+          case 'inspect':
+            return await this.handleInspect(args || {});
 
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         }
       } catch (error) {
+        if (error instanceof McpError) throw error;
         console.error('Tool execution error:', error);
         throw new McpError(
           ErrorCode.InternalError,
@@ -498,6 +184,271 @@ class ClaudeHistorianServer {
         );
       }
     });
+  }
+
+  private async handleSearch(
+    args: Record<string, unknown>,
+  ): Promise<{ content: { type: string; text: string }[] }> {
+    const scope = (args.scope as string) || 'all';
+    const query = args.query as string | undefined;
+    const limit = (args.limit as number) || 10;
+    const detailLevel = (args.detail_level as string) || 'summary';
+    const project = args.project as string | undefined;
+    const filepath = args.filepath as string | undefined;
+    const timeframe = args.timeframe as string | undefined;
+
+    // Validate: most scopes require a query
+    const queryRequired = !['sessions', 'tools', 'files'].includes(scope);
+    if (queryRequired && !query) {
+      throw new McpError(ErrorCode.InvalidParams, `scope "${scope}" requires a "query" parameter`);
+    }
+
+    switch (scope) {
+      case 'conversations': {
+        const result = await this.universalEngine.searchConversations(
+          query!,
+          project,
+          timeframe,
+          limit,
+        );
+        const text = this.formatter.formatSearchConversations(result.results, detailLevel, limit);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'files': {
+        if (!filepath) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            'scope "files" requires a "filepath" parameter',
+          );
+        }
+        const result = await this.universalEngine.findFileContext(filepath, limit);
+        const text = this.formatter.formatFileContext(result.results, filepath, detailLevel);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'similar': {
+        const result = await this.universalEngine.findSimilarQueries(query!, limit);
+        const text = this.formatter.formatSimilarQueries(
+          result.results,
+          query!,
+          detailLevel,
+          limit,
+        );
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'errors': {
+        const result = await this.universalEngine.getErrorSolutions(
+          query!,
+          limit,
+          project,
+          timeframe,
+        );
+        const text = this.formatter.formatErrorSolutions(
+          result.results,
+          query!,
+          detailLevel,
+          limit,
+        );
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'sessions': {
+        const result = await this.universalEngine.getRecentSessions(limit, project, timeframe);
+        const text = this.formatter.formatRecentSessions(
+          result.results,
+          project,
+          limit,
+          detailLevel,
+        );
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'tools': {
+        const result = await this.universalEngine.getToolPatterns(
+          query || undefined,
+          limit,
+          project,
+          timeframe,
+        );
+        const text = this.formatter.formatToolPatterns(
+          result.results,
+          query || undefined,
+          limit,
+          detailLevel,
+        );
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'plans': {
+        const result = await this.universalEngine.searchPlans(query!, limit);
+        const text = this.formatter.formatPlanSearch(
+          { searchQuery: query!, plans: result.results },
+          detailLevel,
+          limit,
+        );
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'config': {
+        const result = await this.searchEngine.searchConfig(query!, limit);
+        const text = this.formatter.formatConfigSearch(result, detailLevel, limit);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'tasks': {
+        const result = await this.searchEngine.searchTasks(query!, limit);
+        const text = this.formatter.formatTaskSearch(result, detailLevel, limit);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'memories': {
+        const result = await this.searchEngine.searchMemories(query!, limit);
+        const text = this.formatter.formatMemorySearch(result, detailLevel, limit);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'all':
+      default: {
+        // Parallel fan-out: conversations + plans + config + memories + errors + sessions + tools
+        const [
+          convResult,
+          planResult,
+          configResult,
+          memoryResult,
+          errorResult,
+          sessionResult,
+          toolResult,
+        ] = await Promise.allSettled([
+          this.universalEngine.searchConversations(query!, project, timeframe, limit),
+          this.universalEngine.searchPlans(query!, limit),
+          this.searchEngine.searchConfig(query!, limit),
+          this.searchEngine.searchMemories(query!, limit),
+          this.universalEngine.getErrorSolutions(query!, limit),
+          this.universalEngine.getRecentSessions(limit, project),
+          this.universalEngine.getToolPatterns(query || undefined, limit),
+        ]);
+
+        // Merge and deduplicate results
+        const allMessages: CompactMessage[] = [];
+
+        if (convResult.status === 'fulfilled') {
+          allMessages.push(...convResult.value.results.messages);
+        }
+        if (planResult.status === 'fulfilled') {
+          for (const plan of planResult.value.results) {
+            allMessages.push({
+              uuid: `plan-${plan.name}`,
+              timestamp: plan.timestamp,
+              type: 'assistant',
+              content: `[Plan: ${plan.title || plan.name}] ${plan.content.substring(0, 500)}`,
+              sessionId: 'plans',
+              projectPath: plan.filepath,
+              relevanceScore: plan.relevanceScore,
+            });
+          }
+        }
+        if (configResult.status === 'fulfilled') {
+          allMessages.push(...configResult.value.messages);
+        }
+        if (memoryResult.status === 'fulfilled') {
+          allMessages.push(...memoryResult.value.messages);
+        }
+        if (errorResult.status === 'fulfilled') {
+          for (const sol of errorResult.value.results) {
+            for (const msg of sol.solution) {
+              allMessages.push({
+                ...msg,
+                uuid: msg.uuid || `error-${sol.errorPattern}`,
+                content: `[Error: ${sol.errorPattern}] ${msg.content}`,
+                relevanceScore: (msg.relevanceScore || 0) + sol.frequency,
+              });
+            }
+          }
+        }
+        if (sessionResult.status === 'fulfilled') {
+          for (const sess of sessionResult.value.results) {
+            allMessages.push({
+              uuid: `session-${sess.session_id}`,
+              timestamp: sess.end_time ?? sess.start_time ?? '',
+              type: 'assistant',
+              content: `[Session: ${sess.project_path?.split('/').pop() || 'unknown'}] ${(sess.accomplishments || []).join(', ')}`,
+              sessionId: sess.session_id,
+              projectPath: sess.project_path ?? undefined,
+              relevanceScore: 0,
+            });
+          }
+        }
+        if (toolResult.status === 'fulfilled') {
+          for (const pat of toolResult.value.results) {
+            if (pat.successfulUsages[0]) {
+              allMessages.push({
+                ...pat.successfulUsages[0],
+                uuid: pat.successfulUsages[0].uuid || `tool-${pat.toolName}`,
+                content: `[Tool: ${pat.toolName}] ${pat.successfulUsages[0].content}`,
+              });
+            }
+          }
+        }
+
+        // Deduplicate by uuid (same message can appear from multiple scopes)
+        const seen = new Set<string>();
+        const deduped = allMessages.filter((m) => {
+          const key = m.uuid || m.content.substring(0, 100);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const sorted = deduped
+          .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+          .slice(0, limit);
+
+        const mergedResult = {
+          messages: sorted,
+          totalResults: allMessages.length,
+          searchQuery: query!,
+          executionTime: 0,
+        };
+
+        const text = this.formatter.formatSearchConversations(mergedResult, detailLevel, limit);
+        return { content: [{ type: 'text', text }] };
+      }
+    }
+  }
+
+  private async handleInspect(
+    args: Record<string, unknown>,
+  ): Promise<{ content: { type: string; text: string }[] }> {
+    const sessionId = args.session_id as string;
+    const maxMessages = (args.max_messages as number) || 10;
+    const focus = (args.focus as string) || 'all';
+
+    if (!sessionId) {
+      throw new McpError(ErrorCode.InvalidParams, 'session_id is required');
+    }
+
+    const result = await this.universalEngine.generateCompactSummary(sessionId, maxMessages, focus);
+
+    if (result.results.message_count === 0) {
+      const hint =
+        sessionId.length < 36
+          ? `No session matching prefix "${sessionId}". Use a longer prefix or full UUID from search results.`
+          : `No session found with ID "${sessionId}".`;
+      const text = this.formatter.formatCompactSummary([], sessionId);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: text.replace('{"session":null}', JSON.stringify({ session: null, hint })),
+          },
+        ],
+      };
+    }
+
+    const text = this.formatter.formatCompactSummary([result.results], sessionId);
+
+    return { content: [{ type: 'text', text }] };
   }
 
   async run(): Promise<void> {
@@ -693,7 +644,7 @@ async function testMCPServer(): Promise<boolean> {
         );
         const hasTools = responses.some(
           (r) =>
-            (r as McpResponse).id === 2 && ((r as McpResponse).result?.tools?.length ?? 0) >= 7,
+            (r as McpResponse).id === 2 && ((r as McpResponse).result?.tools?.length ?? 0) === 2,
         );
 
         resolve(hasInit && hasTools);

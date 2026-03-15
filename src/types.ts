@@ -3,6 +3,7 @@ export interface MessageContentBlock {
   text?: string;
   name?: string;
   input?: Record<string, unknown>;
+  content?: string | MessageContentBlock[];
 }
 
 export interface ClaudeMessage {
@@ -28,6 +29,7 @@ export interface ClaudeMessage {
   uuid: string;
   timestamp: string;
   requestId?: string;
+  slug?: string;
 }
 
 export interface CompactSummaryData {
@@ -52,14 +54,19 @@ export interface CompactMessage {
   projectPath?: string;
   relevanceScore?: number;
   finalScore?: number; // For enhanced scoring calculations
+  sessionSlug?: string; // Human-readable session name (e.g., "curried-zooming-charm")
+  _contentLower?: string; // Lazy-cached content.toLowerCase() — avoid recomputing in hot loops
+  _contentType?: 'code' | 'error' | 'technical' | 'conversational'; // Lazy-cached detectContentType()
   context?: {
     filesReferenced?: string[];
     toolsUsed?: string[];
     errorPatterns?: string[];
     bashCommands?: string[]; // Extracted bash commands from tool_use
+    editDiffs?: string[]; // "old → new" summaries from Edit tool_use inputs
     claudeInsights?: string[]; // Solutions, explanations from Claude
     codeSnippets?: string[]; // Code blocks and snippets
     actionItems?: string[]; // Next steps and actions
+    progressInfo?: string[]; // Progress lines: "Progress: X/Y done", task status
   };
 }
 

@@ -294,7 +294,6 @@ export class SearchHelpers {
     let totalScore = 0;
     let significantMatches = 0;
     const maxWords = Math.max(words1.length, words2.length);
-    const minWords = Math.min(words1.length, words2.length);
     const matched2 = new Set<number>();
 
     for (let i = 0; i < words1.length; i++) {
@@ -350,9 +349,9 @@ export class SearchHelpers {
       }
     }
 
-    // CRITICAL: Require at least 2 significant word matches for semantic relevance
-    // This prevents "write unit tests" matching "test sidekick" (only 1 word overlap)
-    if (significantMatches < 2 && significant1.length >= 2 && significant2.length >= 2) {
+    // Require at least 1 significant word match for semantic relevance
+    // Lowered from 2 — short technical queries like "fix auth" have 1-2 significant words
+    if (significantMatches < 1 && significant1.length >= 2 && significant2.length >= 2) {
       return 0; // Not enough semantic overlap
     }
 
@@ -374,8 +373,8 @@ export class SearchHelpers {
       );
     const technicalBoost = isTechnical ? 1.2 : 1.0;
 
-    const lengthPenalty = minWords / maxWords;
-    const baseScore = (totalScore / maxWords) * lengthPenalty * technicalBoost;
+    // totalScore/maxWords already penalizes unmatched words — no additional length penalty
+    const baseScore = (totalScore / maxWords) * technicalBoost;
     return Math.min(baseScore + stemBonus, 1.0);
   }
 

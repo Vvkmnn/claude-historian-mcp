@@ -4,6 +4,12 @@ import { homedir } from 'os';
 import { constants } from 'fs';
 import { ClaudeMessage, MessageContentBlock } from './types.js';
 
+// Directory listing caches — MCP server is long-lived, 30s TTL avoids
+// ~6,700 stat calls per query while staying fresh enough for search.
+const DIR_CACHE_TTL = 30_000;
+const projectDirCache: { dirs: string[]; ts: number } = { dirs: [], ts: 0 };
+const jsonlFileCache = new Map<string, { files: string[]; ts: number }>();
+
 export function getClaudeProjectsPath(): string {
   return join(homedir(), '.claude', 'projects');
 }
@@ -153,6 +159,11 @@ export function encodeProjectPath(path: string): string {
 }
 
 export async function findProjectDirectories(): Promise<string[]> {
+  const now = Date.now();
+  if (projectDirCache.dirs.length > 0 && now - projectDirCache.ts < DIR_CACHE_TTL) {
+    return projectDirCache.dirs;
+  }
+
   try {
     const projectsPath = getClaudeProjectsPath();
     const entries = await readdir(projectsPath);
@@ -173,7 +184,10 @@ export async function findProjectDirectories(): Promise<string[]> {
     const dirsWithMtime = results.filter((r): r is { dir: string; mtime: number } => r !== null);
 
     // Sort by mtime descending (most recent first) - fixes #70
-    return dirsWithMtime.sort((a, b) => b.mtime - a.mtime).map((d) => d.dir);
+    const dirs = dirsWithMtime.sort((a, b) => b.mtime - a.mtime).map((d) => d.dir);
+    projectDirCache.dirs = dirs;
+    projectDirCache.ts = now;
+    return dirs;
   } catch (error) {
     console.error('Error finding project directories:', error);
     return [];
@@ -181,6 +195,10 @@ export async function findProjectDirectories(): Promise<string[]> {
 }
 
 export async function findJsonlFiles(projectDir: string): Promise<string[]> {
+  const now = Date.now();
+  const cached = jsonlFileCache.get(projectDir);
+  if (cached && now - cached.ts < DIR_CACHE_TTL) return cached.files;
+
   try {
     const projectsPath = getClaudeProjectsPath();
     const fullPath = join(projectsPath, projectDir);
@@ -200,7 +218,9 @@ export async function findJsonlFiles(projectDir: string): Promise<string[]> {
       }),
     );
 
-    return filesWithStats.sort((a, b) => b.mtime - a.mtime).map((f) => f.file);
+    const files = filesWithStats.sort((a, b) => b.mtime - a.mtime).map((f) => f.file);
+    jsonlFileCache.set(projectDir, { files, ts: now });
+    return files;
   } catch (error) {
     console.error(`Error finding JSONL files in ${projectDir}:`, error);
     return [];
@@ -218,8 +238,33 @@ export function extractContentFromMessage(message: {
     return message.content
       .map((item: MessageContentBlock) => {
         if (item.type === 'text') return item.text ?? '';
-        if (item.type === 'tool_use') return `[Tool: ${item.name}]`;
-        if (item.type === 'tool_result') return `[Tool Result]`;
+        if (item.type === 'tool_use') {
+          const parts = [`[Tool: ${item.name}]`];
+          if (item.input) {
+            // Extract high-value fields: file paths, commands, descriptions, queries
+            for (const key of [
+              'file_path',
+              'command',
+              'description',
+              'pattern',
+              'query',
+              'prompt',
+              'path',
+            ]) {
+              const val = item.input[key];
+              if (typeof val === 'string') {
+                parts.push(val.slice(0, 200));
+              }
+            }
+          }
+          return parts.join(' ');
+        }
+        if (item.type === 'tool_result') {
+          if (typeof item.content === 'string') {
+            return `[Tool Result] ${item.content.slice(0, 300)}`;
+          }
+          return '[Tool Result]';
+        }
         return '';
       })
       .join(' ')
@@ -255,14 +300,15 @@ export function calculateRelevanceScore(
   message: ClaudeMessage,
   query: string,
   projectPath?: string,
+  preExtractedContent?: string,
+  preComputedQueryWords?: string[],
 ): number {
-  // Extract content ONCE — was previously extracted 3x (in scoreCoreTerms, scoreSupportingTerms, scoreFileReferences)
-  const content = extractContentFromMessage(message.message || {});
+  const content = preExtractedContent ?? extractContentFromMessage(message.message || {});
   if (!content) return 0;
 
   const lowerContent = content.toLowerCase();
   const lowerQuery = query.toLowerCase();
-  const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
+  const queryWords = preComputedQueryWords ?? lowerQuery.split(/\s+/).filter((w) => w.length > 2);
 
   // Split content into words ONCE — matchesTechTerm was re-splitting per call
   const contentWords = content.split(/[\s.,;:!?()[\]{}'"<>]+/);
@@ -273,16 +319,31 @@ export function calculateRelevanceScore(
 
   const coreScore = scoreCoreTerms(lowerContent, queryWords, contentWordSet);
 
-  // If core terms don't match, reject completely
-  if (coreScore < 0) {
-    return 0;
-  }
-
+  // Core term mismatch applies a heavy penalty but does NOT reject.
+  // Recall rule: filters must be soft (scoring boosts), not hard (discard).
   let score = coreScore;
   score += scoreSupportingTerms(queryWords, contentWordSet);
-  score += scoreToolUsage(message);
-  score += scoreFileReferences(lowerContent);
-  score += scoreProjectMatch(message, projectPath);
+
+  // Gate metadata bonuses behind query term match.
+  // Without this, scoreToolUsage(+5) and scoreFileReferences(+3) give positive
+  // scores to messages with ZERO query relevance — "xyznonexistent" returns results.
+  const anyTermMatched =
+    queryWords.length === 0 || queryWords.some((w) => lowerContent.includes(w));
+
+  if (anyTermMatched) {
+    score += scoreToolUsage(message);
+    score += scoreFileReferences(lowerContent);
+    score += scoreProjectMatch(message, projectPath);
+
+    // Slug match bonus: session slugs are human-memorable names like "curried-zooming-charm"
+    if (message.slug) {
+      const slugWords = message.slug.toLowerCase().replace(/-/g, ' ');
+      if (queryWords.some((w) => slugWords.includes(w))) {
+        score += 5;
+      }
+    }
+  }
+
   return score;
 }
 
@@ -304,17 +365,26 @@ function scoreCoreTerms(
     }
   }
 
-  // If query has strict tech terms but NONE match, reject completely
+  // If query has strict tech terms but NONE match, heavy penalty (not rejection).
+  // Recall rule: soft filters only — never discard candidates before scoring phase.
   if (strictCoreTerms.length > 0 && strictCoreMatches === 0) {
-    return -1000; // Signal rejection to parent function
+    score -= 8;
   }
 
   // Individual word scoring for non-core terms
+  // Two-tier matching: exact word boundary first, substring fallback second.
+  // Substring fallback catches hyphenated terms ("font-size", "idle-time-limit"),
+  // dotted terms ("demo.cast", "demo.gif"), and embedded terms that word-splitting misses.
   let wordMatchCount = strictCoreMatches;
   for (const word of queryWords) {
-    if (!strictCoreTerms.includes(word) && contentWordSet.has(word)) {
-      wordMatchCount++;
-      score += WORD_MATCH_SCORE;
+    if (!strictCoreTerms.includes(word)) {
+      if (contentWordSet.has(word)) {
+        wordMatchCount++;
+        score += WORD_MATCH_SCORE;
+      } else if (lowerContent.includes(word)) {
+        wordMatchCount++;
+        score += WORD_MATCH_SCORE * 0.5;
+      }
     }
   }
 

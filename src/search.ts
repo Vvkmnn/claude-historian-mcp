@@ -20,16 +20,51 @@ import {
   findClaudeMarkdownFiles,
   findTaskFiles,
 } from './utils.js';
-import { readFile, stat } from 'fs/promises';
+import { readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { SearchHelpers } from './search-helpers.js';
+import { PROJECT_NAME_BOOST, MAX_MULTIPLICATIVE_BOOST } from './scoring-constants.js';
+
+/** Lazily cache and return content.toLowerCase() to avoid recomputing in hot loops */
+function getContentLower(msg: CompactMessage): string {
+  if (!msg._contentLower) msg._contentLower = msg.content.toLowerCase();
+  return msg._contentLower;
+}
 
 export class HistorySearchEngine {
   private parser: ConversationParser;
-  private messageCache: Map<string, CompactMessage[]> = new Map();
+  // messageCache removed: cache key was ${projectDir}/${file} without query,
+  // so different queries returned stale results. Per-tool searchCache (LRU, 200
+  // entries, 60s TTL) handles repeated identical queries correctly.
+
+  // LRU search cache — 200 entries, 60s TTL. Avoids re-scanning files for
+  // repeated queries within a session. Map iteration order = insertion order.
+  private searchCache = new Map<string, { result: unknown; ts: number }>();
+  private static readonly CACHE_MAX = 200;
+  private static readonly CACHE_TTL = 60_000;
 
   constructor() {
     this.parser = new ConversationParser();
+  }
+
+  private getCached<T>(key: string): T | undefined {
+    const entry = this.searchCache.get(key);
+    if (!entry || Date.now() - entry.ts > HistorySearchEngine.CACHE_TTL) {
+      if (entry) this.searchCache.delete(key);
+      return undefined;
+    }
+    // Move to end (LRU refresh)
+    this.searchCache.delete(key);
+    this.searchCache.set(key, entry);
+    return entry.result as T;
+  }
+
+  private setCache(key: string, result: unknown): void {
+    if (this.searchCache.size >= HistorySearchEngine.CACHE_MAX) {
+      const oldest = this.searchCache.keys().next().value;
+      if (oldest) this.searchCache.delete(oldest);
+    }
+    this.searchCache.set(key, { result, ts: Date.now() });
   }
 
   /**
@@ -60,6 +95,10 @@ export class HistorySearchEngine {
     timeframe?: string,
     limit: number = 15, // Default to 15 for better coverage
   ): Promise<SearchResult> {
+    const cacheKey = `search|${query}|${projectFilter ?? ''}|${timeframe ?? ''}|${limit}`;
+    const cached = this.getCached<SearchResult>(cacheKey);
+    if (cached) return cached;
+
     const startTime = Date.now();
 
     // Intelligent query analysis and classification
@@ -68,7 +107,7 @@ export class HistorySearchEngine {
 
     try {
       // Multi-stage optimized search
-      return await this.performOptimizedSearch(
+      const result = await this.performOptimizedSearch(
         query,
         queryAnalysis,
         requestedLimit,
@@ -76,6 +115,8 @@ export class HistorySearchEngine {
         projectFilter,
         timeframe,
       );
+      this.setCache(cacheKey, result);
+      return result;
     } catch (error) {
       console.error('Search error:', error);
       return {
@@ -156,8 +197,37 @@ export class HistorySearchEngine {
         query,
         analysis,
         timeFilter,
-        limit * 2, // Gather 2x but with higher quality threshold
+        limit * 8, // Gather 8x for comprehensive coverage — scoring phase handles ranking
       );
+
+      // Project-name boosting: if any query term matches a project directory name,
+      // boost all results from that project.
+      // Use encoded dir names directly to avoid lossy decodeProjectPath
+      // (which converts real hyphens to slashes, e.g. codex-mcp-historian → codex/mcp/historian)
+      const queryTermsLower = query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2);
+      const matchingProjectDirs = new Set<string>();
+      for (const dir of targetDirs) {
+        const dirLower = dir.toLowerCase();
+        for (const term of queryTermsLower) {
+          if (dirLower.includes(term)) {
+            matchingProjectDirs.add(dir);
+          }
+        }
+      }
+      if (matchingProjectDirs.size > 0) {
+        const matchingDirsArray = [...matchingProjectDirs];
+        for (const msg of candidates) {
+          if (!msg.projectPath) continue;
+          // Match by checking if the encoded dir name appears in the encoded form of projectPath
+          const encodedPath = msg.projectPath.replace(/\//g, '-');
+          if (matchingDirsArray.some((d) => encodedPath.includes(d) || d.includes(encodedPath))) {
+            msg.relevanceScore = (msg.relevanceScore || 0) * PROJECT_NAME_BOOST;
+          }
+        }
+      }
 
       // Intelligent relevance scoring and selection with quality guarantee
       const topRelevant = this.selectTopRelevantResults(candidates, query, analysis, limit);
@@ -165,13 +235,20 @@ export class HistorySearchEngine {
       // Quality gate: Only return results that meet minimum value threshold
       const qualityResults = topRelevant.filter(
         (msg) =>
-          (msg.finalScore || msg.relevanceScore || 0) >= 1.5 && // Must be reasonably relevant (use finalScore with query boosting)
+          (msg.finalScore || msg.relevanceScore || 0) >= 0.5 && // Soft quality gate — recall > precision
           msg.content.length >= 40 && // Must have substantial content
           !this.isLowValueContent(msg.content), // Must not be filler
       );
 
+      // Fallback: never return 0 results when candidates exist.
+      // Zero results force users to raw JSONL parsing — return best available instead.
+      const finalResults =
+        qualityResults.length > 0
+          ? qualityResults
+          : topRelevant.filter((msg) => msg.content.length >= 40).slice(0, limit);
+
       return {
-        messages: qualityResults,
+        messages: finalResults,
         totalResults: candidates.length,
         searchQuery: query,
         executionTime: Date.now() - startTime,
@@ -190,32 +267,39 @@ export class HistorySearchEngine {
     targetCount: number,
   ): Promise<CompactMessage[]> {
     const candidates: CompactMessage[] = [];
+    const perProject = Math.max(20, Math.ceil(targetCount / projectDirs.length));
 
-    // Process projects in parallel with intelligent early stopping
-    const projectResults = await Promise.allSettled(
-      projectDirs.map(async (projectDir) => {
-        const dirCandidates = await this.processProjectFocused(
-          projectDir,
-          query,
-          analysis,
-          timeFilter,
-          Math.ceil(targetCount / projectDirs.length),
-        );
-        return dirCandidates;
-      }),
-    );
+    // All projects in one Promise.allSettled — libuv thread pool (4 threads)
+    // already throttles I/O. Batching added unnecessary synchronization points
+    // (slowest project in each batch gated the entire round).
+    const BATCH_SIZE = projectDirs.length;
 
-    // Aggregate with aggressive noise filtering
-    for (const result of projectResults) {
-      if (result.status === 'fulfilled') {
-        const dirMessages = result.value.filter((msg) =>
-          this.isHighlyRelevant(msg, query, analysis),
-        );
-        candidates.push(...dirMessages);
+    for (let i = 0; i < projectDirs.length; i += BATCH_SIZE) {
+      const batch = projectDirs.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.allSettled(
+        batch.map(async (projectDir) => {
+          const dirCandidates = await this.processProjectFocused(
+            projectDir,
+            query,
+            analysis,
+            timeFilter,
+            perProject,
+          );
+          return dirCandidates;
+        }),
+      );
 
-        // Early termination if we have enough high-quality candidates
-        if (candidates.length >= targetCount) break;
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          const dirMessages = result.value.filter((msg) =>
+            this.isHighlyRelevant(msg, query, analysis),
+          );
+          candidates.push(...dirMessages);
+        }
       }
+
+      // No early termination — recall requires scanning all projects.
+      // The scoring phase handles ranking from the full candidate set.
     }
 
     return candidates;
@@ -233,20 +317,19 @@ export class HistorySearchEngine {
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
 
-      // Process all files — recent files are first (sorted by mtime in findJsonlFiles)
-      const priorityFiles = jsonlFiles;
+      // Sequential with per-file early termination.
+      // Files are sorted by mtime (most recent first) so results cluster in first 1-3 files.
+      // Batching (Promise.allSettled) was a regression: forced reading 5+ files minimum,
+      // destroying early termination which is the core perf advantage.
+      const perFileSlice = Math.ceil(targetPerProject / jsonlFiles.length);
 
-      for (const file of priorityFiles) {
+      for (const file of jsonlFiles) {
         const fileMessages = await this.processJsonlFile(projectDir, file, query, timeFilter);
-
-        // Balanced filtering per file
         const relevant = fileMessages
-          .filter((msg) => (msg.relevanceScore || 0) >= 1) // Lower threshold for usefulness
-          .filter((msg) => this.matchesQueryIntent(msg, analysis))
-          .slice(0, Math.ceil(targetPerProject / priorityFiles.length));
+          .filter((msg) => (msg.relevanceScore || 0) >= 0.5)
+          .slice(0, perFileSlice);
 
         messages.push(...relevant);
-
         if (messages.length >= targetPerProject) break;
       }
     } catch (error) {
@@ -258,12 +341,13 @@ export class HistorySearchEngine {
 
   private isHighlyRelevant(
     message: CompactMessage,
-    query: string,
-    analysis: QueryAnalysis,
+    _query: string,
+    _analysis: QueryAnalysis,
   ): boolean {
-    const content = message.content.toLowerCase();
+    const content = getContentLower(message);
 
-    // Eliminate all noise patterns aggressively - expanded to catch Claude system messages
+    // Noise-only filter — no scoring or intent filtering here.
+    // The scoring phase (selectTopRelevantResults) handles ranking.
     const noisePatterns = [
       'this session is being continued',
       'caveat:',
@@ -274,7 +358,6 @@ export class HistorySearchEngine {
       'much better! now i can see',
       'package.js',
       'export interface',
-      // Claude system/intro messages that shouldn't match searches
       'you are claude code',
       'read-only mode',
       'i cannot make changes',
@@ -291,15 +374,11 @@ export class HistorySearchEngine {
       return false;
     }
 
-    // Must have reasonable relevance score - lowered from 1 to 0.3 to allow more candidates through
-    if ((message.relevanceScore || 0) < 0.3) return false;
-
-    // Must match query intent
-    return this.matchesQueryIntent(message, analysis);
+    return true;
   }
 
   private matchesQueryIntent(message: CompactMessage, analysis: QueryAnalysis): boolean {
-    const content = message.content.toLowerCase();
+    const content = getContentLower(message);
 
     // Intent-based matching
     switch (analysis.type) {
@@ -342,38 +421,41 @@ export class HistorySearchEngine {
     analysis: QueryAnalysis,
     limit: number,
   ): CompactMessage[] {
-    // Enhanced scoring with semantic boosts
+    // Hoist query term computation — was recomputed per candidate inside .map()
+    // Dedup to prevent double-counting (e.g. "token progress LLM progress" counted "progress" twice)
+    const queryTerms = [
+      ...new Set(
+        query
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w.length > 2),
+      ),
+    ];
+
     const scoredCandidates = candidates.map((msg) => {
       let score = msg.relevanceScore || 0;
 
-      // If relevanceScore is 0 for multi-word query, skip this message entirely
-      // (it failed the multi-word matching requirement)
-      const queryWords = query.split(/\s+/).filter((w) => w.length > 2);
-      if (queryWords.length >= 2 && score === 0) {
-        return { ...msg, finalScore: 0 };
+      const contentLower = getContentLower(msg);
+
+      // Count matched terms FIRST — needed for the zero gate below
+      let matchCount = 0;
+      for (const t of queryTerms) {
+        if (contentLower.includes(t)) matchCount++;
       }
 
-      const contentLower = msg.content.toLowerCase();
-      const queryTerms = query
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 2);
+      // Zero gate: only discard when BOTH relevanceScore is 0 AND no terms match.
+      // Previously this discarded any multi-word query with score=0, which killed
+      // long queries where substring matches gave partial scores (e.g. 0.5 per term).
+      if (queryTerms.length >= 2 && score === 0 && matchCount === 0) {
+        msg.finalScore = 0;
+        return msg;
+      }
 
-      // Query coverage: penalize partial matches
-      const matchCount = queryTerms.filter((term) => contentLower.includes(term)).length;
-      const coverageRatio = queryTerms.length > 0 ? matchCount / queryTerms.length : 1;
-
-      // Apply boost based on coverage ratio
-      if (coverageRatio >= 0.5) {
-        // Good coverage (≥50%): apply multiplicative boost for each match
-        for (const term of queryTerms) {
-          if (contentLower.includes(term)) {
-            score *= 2.0; // Each matching term doubles relevance
-          }
-        }
-      } else if (matchCount > 0) {
-        // Partial match (<50%): modest boost but apply coverage penalty
-        score *= (1 + matchCount * 0.5) * coverageRatio;
+      // Simple match-count boosting — replaces expensive IDF computation.
+      // More matched terms = higher boost, capped at MAX_MULTIPLICATIVE_BOOST.
+      if (matchCount > 0) {
+        const boostFactor = 1 + 0.5 * matchCount;
+        score *= Math.min(boostFactor, MAX_MULTIPLICATIVE_BOOST);
       } else {
         // No matches: heavy penalty
         score *= 0.1;
@@ -386,6 +468,13 @@ export class HistorySearchEngine {
         }
       });
 
+      // Intent match bonus — rewards but doesn't require intent match.
+      // matchesQueryIntent was previously a hard filter that dropped candidates;
+      // now it's a soft boost that helps ranking without killing recall.
+      if (this.matchesQueryIntent(msg, analysis)) {
+        score *= 1.3;
+      }
+
       // Recency boost for time-sensitive queries
       if (analysis.urgency === 'high') {
         const timestamp = new Date(msg.timestamp);
@@ -394,7 +483,8 @@ export class HistorySearchEngine {
         if (hoursDiff < 24) score *= 1.5;
       }
 
-      return { ...msg, finalScore: score };
+      msg.finalScore = score;
+      return msg;
     });
 
     // Sort by final score and deduplicate
@@ -406,7 +496,7 @@ export class HistorySearchEngine {
   }
 
   private messageMatchesSemanticType(message: CompactMessage, type: string): boolean {
-    const content = message.content.toLowerCase();
+    const content = getContentLower(message);
 
     switch (type) {
       case 'errorResolution':
@@ -529,38 +619,7 @@ export class HistorySearchEngine {
     query: string,
     timeFilter: ((timestamp: string) => boolean) | undefined,
   ): Promise<CompactMessage[]> {
-    const cacheKey = `${projectDir}/${file}`;
-
-    // Check cache first
-    if (this.messageCache.has(cacheKey)) {
-      return this.messageCache.get(cacheKey)!;
-    }
-
-    // Parse file
-    const messages = await this.parser.parseJsonlFile(projectDir, file, query, timeFilter);
-
-    // Enhanced caching with increased size limit
-    if (this.messageCache.size < 500) {
-      // Increased from 100
-      this.messageCache.set(cacheKey, messages);
-    } else if (messages.some((m) => (m.relevanceScore || 0) > 8)) {
-      // Replace least valuable cache entry with high-value content
-      const cacheEntries = Array.from(this.messageCache.entries());
-      const leastValuable = cacheEntries.reduce(
-        (min, [key, msgs]) => {
-          const avgScore = msgs.reduce((sum, m) => sum + (m.relevanceScore || 0), 0) / msgs.length;
-          return avgScore < (min.avgScore || Infinity) ? { key, avgScore } : min;
-        },
-        { key: '', avgScore: Infinity },
-      );
-
-      if (leastValuable.key) {
-        this.messageCache.delete(leastValuable.key);
-        this.messageCache.set(cacheKey, messages);
-      }
-    }
-
-    return messages;
+    return this.parser.parseJsonlFile(projectDir, file, query, timeFilter);
   }
 
   private prioritizeResultsForClaudeCode(
@@ -609,7 +668,7 @@ export class HistorySearchEngine {
   }
 
   private isSummaryMessage(message: CompactMessage): boolean {
-    const content = message.content.toLowerCase();
+    const content = getContentLower(message);
     const summaryIndicators = [
       'summary:',
       'in summary',
@@ -631,7 +690,7 @@ export class HistorySearchEngine {
 
   private isHighValueMessage(message: CompactMessage): boolean {
     const relevanceScore = message.relevanceScore || 0;
-    const content = message.content.toLowerCase();
+    const content = getContentLower(message);
 
     // Always include high relevance scores
     if (relevanceScore >= 5) return true;
@@ -751,13 +810,16 @@ export class HistorySearchEngine {
             cPair.norm.endsWith('-' + qPair.norm);
           if (!normMatch) return false;
 
-          // If query word is all lowercase, reject matches where content word has mixed case
-          // (e.g., lowercase "react" query shouldn't match "ReAct" content)
-          // Strip punctuation but preserve case for comparison
+          // Case-aware filter: only apply to words >5 chars.
+          // Short words (tmux, npm, git, etc.) match case-insensitively since the
+          // ReAct/react distinction only matters for longer proper nouns.
           const queryClean = qPair.original.replace(/[^\w-]/g, '');
           const contentClean = cPair.original.replace(/[^\w-]/g, '');
-          if (queryClean === queryClean.toLowerCase() && queryClean.length > 0) {
-            // Reject if content word has uppercase letters (indicates acronym/proper noun)
+          if (
+            queryClean.length > 5 &&
+            queryClean === queryClean.toLowerCase() &&
+            queryClean.length > 0
+          ) {
             if (contentClean !== contentClean.toLowerCase()) {
               return false;
             }
@@ -768,14 +830,15 @@ export class HistorySearchEngine {
         return matched;
       });
 
-      // For multi-word queries, require at least 2 words to match to avoid false positives
-      // If insufficient matches, return score of 0 immediately (no other bonuses apply)
-      if (queryWordPairs.length >= 2 && matches.length < 2) {
-        return 0; // Multi-word queries MUST match multiple words - reject false positives
+      // Graduated multi-word scoring: instead of binary 0/pass, use matchRatio
+      // as a continuous multiplier. Still require at least 1 match for multi-word queries.
+      if (queryWordPairs.length >= 2 && matches.length === 0) {
+        return 0; // Zero matches on multi-word query = reject
       }
 
-      // Add points for word matches
-      score += matches.length * 3;
+      // Graduated scoring: matchRatio penalizes partial coverage
+      const matchRatio = queryWordPairs.length > 0 ? matches.length / queryWordPairs.length : 1;
+      score += matches.length * 3 * matchRatio;
 
       // High bonus for tool usage - essential for Claude Code queries
       if (message.type === 'tool_use' || message.type === 'tool_result') score += 8;
@@ -862,7 +925,7 @@ export class HistorySearchEngine {
                 });
 
                 // Enhanced content matching with case variations and path separators
-                const contentLower = msg.content.toLowerCase();
+                const contentLower = getContentLower(msg);
                 const pathVariations = [
                   filePath.toLowerCase(),
                   filePath.toLowerCase().replace(/\\/g, '/'),
@@ -940,6 +1003,10 @@ export class HistorySearchEngine {
   }
 
   async findSimilarQueries(targetQuery: string, limit: number = 10): Promise<CompactMessage[]> {
+    const cacheKey = `similar|${targetQuery}|${limit}`;
+    const cached = this.getCached<CompactMessage[]>(cacheKey);
+    if (cached) return cached;
+
     const allMessages: CompactMessage[] = [];
 
     try {
@@ -952,10 +1019,9 @@ export class HistorySearchEngine {
       for (const projectDir of limitedDirs) {
         const jsonlFiles = await findJsonlFiles(projectDir);
 
-        // Recent files per project for broad context
-        const limitedFiles = jsonlFiles;
-
-        for (const file of limitedFiles) {
+        // Sequential with per-file early termination.
+        // Files sorted by mtime (most recent first) — results cluster early.
+        for (const file of jsonlFiles) {
           const messages = await this.parser.parseJsonlFile(projectDir, file);
 
           // Find user messages (queries) that are similar and valuable
@@ -964,14 +1030,15 @@ export class HistorySearchEngine {
               msg.type === 'user' &&
               msg.content.length > 15 &&
               msg.content.length < 800 &&
-              !this.isLowValueContent(msg.content), // Only quality queries
+              !this.isLowValueContent(msg.content),
           );
 
           for (let i = 0; i < userQueries.length; i++) {
             const query = userQueries[i];
             const similarity = SearchHelpers.calculateQuerySimilarity(targetQuery, query.content);
-            // Raised threshold to 0.4 and REMOVED partial keyword fallback (causes false positives)
-            if (similarity > 0.4) {
+            // Lowered from 0.4 to 0.25 — removing the double length penalty in
+            // calculateQuerySimilarity reduced scores for length-disparate pairs
+            if (similarity > 0.25) {
               query.relevanceScore = similarity;
 
               // Find the answer - look for next assistant message in original array
@@ -992,7 +1059,6 @@ export class HistorySearchEngine {
             }
           }
 
-          // SPEED FIX: Early termination when we have enough candidates
           if (allMessages.length >= limit * 4) break;
         }
 
@@ -1005,6 +1071,7 @@ export class HistorySearchEngine {
         .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
         .slice(0, limit);
 
+      this.setCache(cacheKey, qualityResults);
       return qualityResults;
     } catch (error) {
       console.error('Similar query search error:', error);
@@ -1012,16 +1079,28 @@ export class HistorySearchEngine {
     }
   }
 
-  async getErrorSolutions(errorPattern: string, limit: number = 10): Promise<ErrorSolution[]> {
+  async getErrorSolutions(
+    errorPattern: string,
+    limit: number = 10,
+    project?: string,
+    timeframe?: string,
+  ): Promise<ErrorSolution[]> {
+    const cacheKey = `errors|${errorPattern}|${project ?? ''}|${timeframe ?? ''}|${limit}`;
+    const cached = this.getCached<ErrorSolution[]>(cacheKey);
+    if (cached) return cached;
+
     const solutions: ErrorSolution[] = [];
     const errorMap = new Map<string, CompactMessage[]>();
 
     try {
-      const projectDirs = await findProjectDirectories();
+      let projectDirs = await findProjectDirectories();
+      if (project) {
+        const projectLower = project.toLowerCase();
+        projectDirs = projectDirs.filter((d) => d.toLowerCase().includes(projectLower));
+      }
       const expandedDirs = await expandWorktreeProjects(projectDirs);
-
-      // Broad coverage for tool pattern discovery
       const limitedDirs = expandedDirs;
+      const timeFilter = timeframe ? getTimeRangeFilter(timeframe) : undefined;
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
@@ -1089,7 +1168,8 @@ export class HistorySearchEngine {
                   (hasMatchingError ||
                     SearchHelpers.hasErrorInContent(current.content, errorPattern)) &&
                   isActualErrorContent &&
-                  !this.isMetaErrorContent(current.content)
+                  !this.isMetaErrorContent(current.content) &&
+                  (!timeFilter || !current.timestamp || timeFilter(current.timestamp))
                 ) {
                   // Use the most relevant error pattern as key
                   const matchedError =
@@ -1158,21 +1238,37 @@ export class HistorySearchEngine {
         }
       }
 
-      return solutions.sort((a, b) => b.frequency - a.frequency).slice(0, limit);
+      const result = solutions.sort((a, b) => b.frequency - a.frequency).slice(0, limit);
+      this.setCache(cacheKey, result);
+      return result;
     } catch (error) {
       console.error('Error solution search error:', error);
       return [];
     }
   }
 
-  async getToolPatterns(toolName?: string, limit: number = 20): Promise<ToolPattern[]> {
+  async getToolPatterns(
+    toolName?: string,
+    limit: number = 20,
+    project?: string,
+    timeframe?: string,
+  ): Promise<ToolPattern[]> {
+    const cacheKey = `tools|${toolName ?? ''}|${project ?? ''}|${timeframe ?? ''}|${limit}`;
+    const cached = this.getCached<ToolPattern[]>(cacheKey);
+    if (cached) return cached;
+
     const toolMap = new Map<string, CompactMessage[]>();
     const workflowMap = new Map<string, CompactMessage[]>();
 
     try {
-      const projectDirs = await findProjectDirectories();
+      let projectDirs = await findProjectDirectories();
+      if (project) {
+        const projectLower = project.toLowerCase();
+        projectDirs = projectDirs.filter((d) => d.toLowerCase().includes(projectLower));
+      }
       const expandedDirs = await expandWorktreeProjects(projectDirs);
       const limitedDirs = expandedDirs;
+      const timeFilter = timeframe ? getTimeRangeFilter(timeframe) : undefined;
 
       // Focus on core Claude Code tools that GLOBAL would recognize
       const coreTools = new Set([
@@ -1186,6 +1282,14 @@ export class HistorySearchEngine {
         'MultiEdit',
         'Notebook',
       ]);
+
+      // Substring match for tool names (e.g. "tmux" matches "mcp__tmux__create-session")
+      const toolNameLower = toolName?.toLowerCase();
+      const matchesTool = (tool: string): boolean => {
+        if (!toolNameLower) return coreTools.has(tool) || tool.startsWith('mcp__');
+        const tl = tool.toLowerCase();
+        return tl.includes(toolNameLower) || toolNameLower.includes(tl);
+      };
 
       // PARALLEL PROCESSING: Process all projects concurrently
       const projectResults = await Promise.allSettled(
@@ -1213,11 +1317,10 @@ export class HistorySearchEngine {
 
               // Extract individual tool usage patterns
               for (const msg of messages) {
+                if (timeFilter && msg.timestamp && !timeFilter(msg.timestamp)) continue;
                 if (msg.context?.toolsUsed?.length) {
                   for (const tool of msg.context.toolsUsed) {
-                    // If toolName specified, only track that tool
-                    // Otherwise, track all core tools
-                    const shouldTrack = toolName ? tool === toolName : coreTools.has(tool);
+                    const shouldTrack = matchesTool(tool);
 
                     if (shouldTrack) {
                       if (!projectToolMap.has(tool)) {
@@ -1238,11 +1341,7 @@ export class HistorySearchEngine {
                   // Create focused workflow patterns
                   for (const currentTool of current.context.toolsUsed) {
                     for (const nextTool of next.context.toolsUsed) {
-                      // If toolName specified, workflow must involve that tool
-                      // Otherwise, workflows between core tools
-                      const shouldTrack = toolName
-                        ? currentTool === toolName || nextTool === toolName
-                        : coreTools.has(currentTool) && coreTools.has(nextTool);
+                      const shouldTrack = matchesTool(currentTool) || matchesTool(nextTool);
 
                       if (shouldTrack) {
                         const workflowKey = `${currentTool} → ${nextTool}`;
@@ -1270,14 +1369,10 @@ export class HistorySearchEngine {
                   for (const firstTool of first.context.toolsUsed) {
                     for (const secondTool of second.context.toolsUsed) {
                       for (const thirdTool of third.context.toolsUsed) {
-                        // If toolName specified, 3-step workflow must involve that tool
-                        const shouldTrack = toolName
-                          ? firstTool === toolName ||
-                            secondTool === toolName ||
-                            thirdTool === toolName
-                          : coreTools.has(firstTool) &&
-                            coreTools.has(secondTool) &&
-                            coreTools.has(thirdTool);
+                        const shouldTrack =
+                          matchesTool(firstTool) ||
+                          matchesTool(secondTool) ||
+                          matchesTool(thirdTool);
 
                         if (shouldTrack) {
                           const workflowKey = `${firstTool} → ${secondTool} → ${thirdTool}`;
@@ -1391,7 +1486,7 @@ export class HistorySearchEngine {
       }
 
       // Sort to prioritize individual tools, then their related workflows
-      return patterns
+      const result = patterns
         .sort((a, b) => {
           const aIsWorkflow = a.toolName.includes('→');
           const bIsWorkflow = b.toolName.includes('→');
@@ -1404,20 +1499,32 @@ export class HistorySearchEngine {
           return b.successfulUsages.length - a.successfulUsages.length;
         })
         .slice(0, limit);
+      this.setCache(cacheKey, result);
+      return result;
     } catch (error) {
       console.error('Tool pattern search error:', error);
       return [];
     }
   }
 
-  async getRecentSessions(limit: number = 10): Promise<SessionInfo[]> {
+  async getRecentSessions(
+    limit: number = 10,
+    project?: string,
+    timeframe?: string,
+  ): Promise<SessionInfo[]> {
     try {
       // OPTIMIZED: Fast session discovery with parallel processing and early termination
-      const projectDirs = await findProjectDirectories();
-      const expandedDirs = await expandWorktreeProjects(projectDirs);
+      let projectDirs = await findProjectDirectories();
 
-      // Broad coverage for session discovery
+      // Filter by project name if specified
+      if (project) {
+        const projectLower = project.toLowerCase();
+        projectDirs = projectDirs.filter((d) => d.toLowerCase().includes(projectLower));
+      }
+
+      const expandedDirs = await expandWorktreeProjects(projectDirs);
       const limitedDirs = expandedDirs;
+      const timeFilter = timeframe ? getTimeRangeFilter(timeframe) : undefined;
 
       // PARALLEL PROCESSING: Process projects concurrently
       const projectResults = await Promise.allSettled(
@@ -1486,9 +1593,10 @@ export class HistorySearchEngine {
         }
       }
 
-      // Sort by real end time
+      // Sort by real end time, apply timeframe filter
       return realSessions
-        .filter((s) => s.end_time) // Only sessions with real timestamps
+        .filter((s) => s.end_time)
+        .filter((s) => !timeFilter || timeFilter(s.end_time!))
         .sort((a, b) => new Date(b.end_time!).getTime() - new Date(a.end_time!).getTime())
         .slice(0, limit);
     } catch (error) {
@@ -1598,19 +1706,27 @@ export class HistorySearchEngine {
     encodedProjectDir: string,
     sessionId: string,
   ): Promise<CompactMessage[]> {
+    // Try exact match first (full UUID)
     try {
-      // Direct access to specific session file
       const jsonlFile = `${sessionId}.jsonl`;
-
       const messages = await this.parser.parseJsonlFile(encodedProjectDir, jsonlFile);
-      return messages;
-    } catch (error) {
-      console.error(
-        `Error getting session messages for ${sessionId} in ${encodedProjectDir}:`,
-        error,
-      );
-      return [];
+      if (messages.length > 0) return messages;
+    } catch {
+      // Exact file not found — fall through to prefix search
     }
+
+    // Prefix search: short ID like "d537af65" → find "d537af65-*.jsonl"
+    try {
+      const files = await findJsonlFiles(encodedProjectDir);
+      const match = files.find((f) => f.startsWith(sessionId));
+      if (match) {
+        return await this.parser.parseJsonlFile(encodedProjectDir, match);
+      }
+    } catch {
+      // No match in this dir
+    }
+
+    return [];
   }
 
   private isLowValueContent(content: string): boolean {
@@ -1697,6 +1813,13 @@ export class HistorySearchEngine {
         const bashCodeMatch = content.match(/```(?:bash|sh|shell|)\n(.{5,80})\n/);
         if (bashCodeMatch) {
           patterns.push(`$ ${bashCodeMatch[1].substring(0, 60)}`);
+        }
+      }
+
+      // Surface structured bashCommands from parsed tool_use inputs
+      if (toolName === 'Bash' && msg.context?.bashCommands?.length) {
+        for (const cmd of msg.context.bashCommands.slice(0, 3)) {
+          patterns.push(`$ ${cmd.substring(0, 60)}`);
         }
       }
     }
@@ -1918,7 +2041,105 @@ export class HistorySearchEngine {
         }
       }
 
+      // Deduplicate by file path — same file can appear as both global-X and project-X
+      const seenPaths = new Set<string>();
+      const dedupedResults = results.filter((r) => {
+        const p = r.context?.filesReferenced?.[0] || r.projectPath || '';
+        if (seenPaths.has(p)) return false;
+        seenPaths.add(p);
+        return true;
+      });
+
       // Sort by relevance and limit
+      const sortedResults = dedupedResults
+        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+        .slice(0, limit);
+
+      return {
+        messages: sortedResults,
+        totalResults: dedupedResults.length,
+        searchQuery: query,
+        executionTime: Date.now() - startTime,
+      };
+    } catch (error) {
+      console.error('Error searching config files:', error);
+      return {
+        messages: [],
+        totalResults: 0,
+        searchQuery: query,
+        executionTime: Date.now() - startTime,
+      };
+    }
+  }
+
+  async searchMemories(query: string, limit: number = 10): Promise<SearchResult> {
+    const startTime = Date.now();
+
+    try {
+      const results: CompactMessage[] = [];
+      const projectsPath = getClaudeProjectsPath();
+      const lowerQuery = query.toLowerCase();
+      const queryTerms = lowerQuery.split(/\s+/).filter((w) => w.length > 2);
+
+      // Glob: ~/.claude/projects/*/memory/*.md
+      let projectDirs: string[];
+      try {
+        const entries = await readdir(projectsPath, { withFileTypes: true });
+        projectDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      } catch {
+        projectDirs = [];
+      }
+
+      for (const projDir of projectDirs) {
+        const memoryDir = join(projectsPath, projDir, 'memory');
+        let memoryFiles: string[];
+        try {
+          const entries = await readdir(memoryDir);
+          memoryFiles = entries.filter((f) => f.endsWith('.md'));
+        } catch {
+          continue; // No memory dir for this project
+        }
+
+        for (const file of memoryFiles) {
+          try {
+            const filePath = join(memoryDir, file);
+            const content = await readFile(filePath, 'utf-8');
+            const lowerContent = content.toLowerCase();
+
+            let score = 0;
+
+            // Exact phrase match
+            if (lowerContent.includes(lowerQuery)) score += 15;
+
+            // Individual term matches
+            for (const term of queryTerms) {
+              const occurrences = (lowerContent.match(new RegExp(term, 'g')) || []).length;
+              score += Math.min(occurrences * 2, 10);
+            }
+
+            if (score > 0) {
+              const stats = await stat(filePath);
+              // Extract project name from encoded dir name
+              const projectName = projDir.replace(/^-/, '/').replace(/-/g, '/');
+              results.push({
+                uuid: `memory-${filePath}`,
+                timestamp: stats.mtime.toISOString(),
+                type: 'assistant',
+                content: content.substring(0, 1000),
+                sessionId: file, // filename as identifier
+                projectPath: projectName,
+                relevanceScore: score,
+                context: {
+                  filesReferenced: [filePath],
+                },
+              });
+            }
+          } catch {
+            // Skip files we can't read
+          }
+        }
+      }
+
       const sortedResults = results
         .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
         .slice(0, limit);
@@ -1930,7 +2151,7 @@ export class HistorySearchEngine {
         executionTime: Date.now() - startTime,
       };
     } catch (error) {
-      console.error('Error searching config files:', error);
+      console.error('Error searching memory files:', error);
       return {
         messages: [],
         totalResults: 0,
