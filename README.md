@@ -80,10 +80,10 @@ The **claude-historian** plugin provides:
 
 **Hooks** (targeted, zero overhead on success):
 
-- Before WebSearch/WebFetch → Check `find_similar_queries`
-- Before EnterPlanMode → Check `search_plans`
-- Before Task agents → Check `find_tool_patterns`
-- After Bash errors → Check `get_error_solutions`
+- Before WebSearch/WebFetch → Check `search scope="similar"`
+- Before EnterPlanMode → Check `search scope="plans"`
+- Before Task agents → Check `search scope="tools"`
+- After Bash errors → Check `search scope="errors"`
 
 **Command:** `/historian-search <query>`
 
@@ -91,23 +91,31 @@ Requires the MCP server installed first. See the emporium for other Claude Code 
 
 ## features
 
-[MCP server](https://modelcontextprotocol.io/) that gives Claude access to your conversation history. Fast search with smart prioritization.
+[MCP server](https://modelcontextprotocol.io/) that gives Claude access to your conversation history. Two tools, 11 scopes, zero dependencies.
 
 Runs locally (with cool shades `[⌐■_■] 📜`):
 
-#### `search_conversations`
+#### `search`
 
-Search your conversation history for past solutions, discussions, and context.
+Search across conversations, files, errors, plans, config, tasks, sessions, tools, similar queries, and memories.
 
 ```
-[⌐■_■] 📜 search_conversations query=<query>
-  > "How did we fix that Redis connection pooling nightmare?"
-  > "Docker container keeps crashing on Kubernetes deployment"
-  > "React infinite re-render loop - useEffect dependency hell"
+search query="docker auth error"                          # default scope: all
+search query="fix build" scope="conversations"            # past solutions
+search query="ENOENT" scope="errors"                      # error patterns + fixes
+search query="auth" scope="plans"                         # implementation plans
+search query="hooks" scope="config"                       # rules, skills, CLAUDE.md
+search query="git push" scope="similar"                   # related questions asked before
+search query="Edit" scope="tools"                         # tool usage workflows
+search filepath="package.json" scope="files"              # file change history
+search scope="sessions"                                   # recent sessions
+search scope="memories"                                   # project memory files
+search query="deploy" scope="all" detail_level="detailed" # full context
+search query="auth" timeframe="7d" project="my-app"       # filtered
 ```
 
 ```json
-[⌐■_■] 📜 "docker auth" | 2 results
+📜 ── search "docker auth" ── 5 results · 405 tokens
 
 {
   "results": [{
@@ -115,225 +123,54 @@ Search your conversation history for past solutions, discussions, and context.
     "ts": "2h ago",
     "content": "Fixed Docker auth by updating registry credentials...",
     "project": "my-app",
-    "score": 15,
+    "score": 100,
     "ctx": { "filesReferenced": ["docker-compose.yml"], "toolsUsed": ["Edit", "Bash"] }
   }]
 }
 ```
 
-#### `find_file_context`
-
-Track modifications, edits, and discussions about specific files across sessions.
-
-```
-[⌐□_□] 📜 find_file_context filepath=<filepath>
-  > "package.json changes that broke everything last month"
-  > "When we accidentally committed .env to main branch"
-  > "Authentication service refactor - before/after comparison"
-```
-
 ```json
-[⌐□_□] 📜 "package.json" | 5 operations
+📜 ── files "package.json" ── 92 operations · 1594 tokens
 
 {
   "filepath": "package.json",
   "operations": [{
     "type": "edit",
     "ts": "1d ago",
-    "changes": ["added vitest dependency", "updated build script"],
-    "ctx": { "filesReferenced": ["package.json", "vitest.config.ts"] }
+    "changes": ["Changed: \"version\": \"1.0.3\" → \"version\": \"1.0.4\""],
+    "content": "Updated version for release"
   }]
 }
 ```
 
-#### `get_error_solutions`
-
-Find how you've resolved similar errors before, with code fixes and patterns.
-
-```
-[⌐×_×] 📜 get_error_solutions error_pattern=<error>
-  > "MODULE_NOT_FOUND - the classic npm/yarn version mismatch"
-  > "CORS preflight failing - but only on production Fridays?"
-  > "Database deadlock during Black Friday traffic spike"
-```
-
 ```json
-[⌐×_×] 📜 "ENOENT no such file" | 2 solutions
+📜 ── tools "Bash" ── 5 patterns · 427 tokens
 
 {
-  "solutions": [{
-    "pattern": "ENOENT: no such file or directory",
-    "frequency": 3,
-    "fixes": [{ "content": "Created missing directory", "code": ["mkdir -p ./dist"] }]
-  }]
-}
-```
-
-#### `find_similar_queries`
-
-Discover related questions you've asked before and their answers.
-
-```
-[⌐◆_◆] 📜 find_similar_queries query=<query>
-  > "Database queries slower than my morning coffee brewing"
-  > "How to implement error boundaries without losing sanity"
-  > "State management: Redux vs Zustand vs just useState"
-```
-
-```json
-[⌐◆_◆] 📜 "typescript error handling" | 3 similar
-
-{
-  "similar": [{
-    "query": "how to handle async errors in typescript",
-    "similarity": 0.72,
-    "ts": "3d ago",
-    "project": "api-server"
-  }]
-}
-```
-
-#### `list_recent_sessions`
-
-Browse your recent Claude sessions with project context and accomplishments.
-
-```
-[⌐○_○] 📜 list_recent_sessions
-  > "Tuesday debugging marathon: 9pm-3am flaky test hunt"
-  > "Performance optimization sprint - reduced bundle 40%"
-  > "The great TypeScript migration of 2024"
-```
-
-```json
-[⌐○_○] 📜 all | 3 sessions
-
-{
-  "sessions": [{
-    "id": "68d5323b",
-    "ts": "2h ago",
-    "duration": 45,
-    "messages": 128,
-    "project": "my-app",
-    "tools": ["Edit", "Bash", "Read"],
-    "accomplishments": ["fixed auth bug", "added unit tests"]
-  }]
-}
-```
-
-#### `find_tool_patterns`
-
-Learn from your successful tool usage workflows and common sequences.
-
-```
-[⌐⎚_⎚] 📜 find_tool_patterns tool_name=<tool>
-  > "Read → Edit → Bash combo for rapid prototyping"
-  > "When I use Grep vs Task for different searches"
-  > "Git operations during feature branch management"
-```
-
-```json
-[⌐⎚_⎚] 📜 "Edit" | 3 patterns
-
-{
-  "tool": "Edit",
+  "tool": "Bash",
   "patterns": [{
-    "name": "Read → Edit → Bash",
-    "uses": 7,
-    "workflow": "Read → Edit → Bash",
-    "practice": "Read file, edit, then run tests (7x successful)"
+    "name": "Bash",
+    "uses": 10,
+    "workflow": "$ npm run build 2>&1",
+    "practice": "Used with: ts, js, json, md files"
   }]
 }
 ```
 
-#### `search_plans`
+#### `inspect`
 
-Search Claude Code plan files for past implementation approaches, decisions, and patterns.
-
-```
-[⌐▣_▣] 📜 search_plans query=<query>
-  > "How did we architect the authentication system?"
-  > "Database migration strategy from last refactor"
-  > "API versioning approach we decided on"
-```
-
-```json
-[⌐▣_▣] 📜 "auth implementation" | 2 plans
-
-{
-  "plans": [{
-    "file": "implement-oauth.md",
-    "ts": "3d ago",
-    "project": "my-app",
-    "summary": "OAuth2 implementation with refresh tokens...",
-    "decisions": ["chose PKCE flow", "JWT for access tokens"]
-  }]
-}
-```
-
-#### `search_config`
-
-Search .claude configuration files (rules, skills, agents, CLAUDE.md) for guidance and patterns.
+Get an intelligent summary of any session by ID (full UUID or short prefix).
 
 ```
-[⌐◈_◈] 📜 search_config query=<query>
-  > "What are my rules about minimalism and code quality?"
-  > "Find the systematic debugging skill documentation"
-  > "Search for test-driven development guidelines"
+inspect session_id="latest"                      # most recent session
+inspect session_id="d537af65"                    # short prefix works
+inspect session_id="d537af65" focus="files"      # only file changes
+inspect session_id="d537af65" focus="tools"      # only tool usage
+inspect session_id="d537af65" focus="solutions"  # only solutions
 ```
 
 ```json
-[⌐◈_◈] 📜 "verify everything" | 2 results
-
-{
-  "results": [{
-    "type": "assistant",
-    "ts": "1/31/2026",
-    "content": "# Verify Everything\n\n## Rule\nEvery claim must be anchored to evidence...",
-    "file": "/Users/v/.claude/rules/verify.md",
-    "category": "global-rules",
-    "score": 34
-  }]
-}
-```
-
-#### `search_tasks`
-
-Search task management data for pending, completed, and in-progress tasks.
-
-```
-[⌐◇_◇] 📜 search_tasks query=<query>
-  > "Find pending tasks related to documentation"
-  > "What tasks mention the authentication system?"
-  > "Search for in-progress refactoring tasks"
-```
-
-```json
-[⌐◇_◇] 📜 "documentation" | 3 results
-
-{
-  "results": [{
-    "type": "assistant",
-    "ts": "4h ago",
-    "content": "[PENDING] Update API documentation\nAdd missing endpoints and examples to the API docs",
-    "file": "/Users/v/.claude/tasks/abc123/5.json",
-    "score": 16
-  }]
-}
-```
-
-#### `extract_compact_summary`
-
-Get a concise summary of what was accomplished in a specific session.
-
-```
-[⌐◉_◉] 📜 extract_compact_summary session_id=<id>
-  > "What did we accomplish in last session?"
-  > "Summarize the authentication refactor work"
-  > "Key decisions from yesterday's debugging"
-```
-
-```json
-[⌐◉_◉] 📜 extracting summary from my-app (68d5323b)
+📜 ── inspect my-app (68d5323b)
 
 {
   "session": {
@@ -420,7 +257,7 @@ How [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp) [work
 - Zero persistent storage or indexing
 - Never leaves your machine
 
-**Performance:** See [PERF.md](./PERF.md) for benchmarks, optimization history, and quality scores. Current (v1.0.5): 4.7/5 average score across 10 tools. ~0.9s per query, zero regressions.
+**Performance:** See [PERFORMANCE.md](./PERFORMANCE.md) for benchmarks, optimization history, and quality scores.
 
 ## alternatives
 
