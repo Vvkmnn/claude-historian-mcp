@@ -20,14 +20,9 @@ if (fs.existsSync(dxtFile)) {
 fs.mkdirSync(buildDir);
 
 // Copy essential files
-const filesToCopy = [
-  'manifest.json',
-  'package.json',
-  'README.md',
-  'LICENSE'
-];
+const filesToCopy = ['manifest.json', 'package.json', 'README.md', 'LICENSE'];
 
-filesToCopy.forEach(file => {
+filesToCopy.forEach((file) => {
   if (fs.existsSync(file)) {
     fs.copyFileSync(file, path.join(buildDir, file));
     console.log(`✅ Copied ${file}`);
@@ -48,8 +43,8 @@ const productionPackage = {
   ...originalPackage,
   devDependencies: undefined,
   scripts: {
-    start: "node dist/index.js"
-  }
+    start: 'node dist/index.js',
+  },
 };
 fs.writeFileSync('package.json', JSON.stringify(productionPackage, null, 2));
 
