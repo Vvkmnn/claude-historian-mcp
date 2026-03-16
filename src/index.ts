@@ -1,16 +1,32 @@
 #!/usr/bin/env node
 
+/**
+ * Claude Historian MCP — Conversation history search across sessions.
+ *
+ * Searches through Claude Code conversation history, .claude files (rules,
+ * skills, agents, plans, CLAUDE.md), memories, and task management data.
+ * Includes diagnostics CLI for health checks and performance benchmarks.
+ *
+ * Tools:
+ *   search  — Search history by scope (conversations, files, errors, plans, etc.)
+ *   inspect — Get intelligent summary of a specific session
+ */
+
+import { createRequire } from 'module';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { HistorySearchEngine } from './search.js';
+
 import { BeautifulFormatter } from './formatter.js';
-import { UniversalHistorySearchEngine } from './universal-engine.js';
+import { HistorySearchEngine } from './search.js';
 import { CompactMessage } from './types.js';
-import { createRequire } from 'module';
+import { UniversalHistorySearchEngine } from './universal-engine.js';
 
 const require = createRequire(import.meta.url);
-const { version: VERSION } = require('../package.json') as { version: string };
+const { version } = require('../package.json') as { version: string };
+
+// ── Migration hints ─────────────────────────────────────────────
 
 // Migration map: old tool names → new invocation hints
 const MIGRATION_HINTS: Record<string, string> = {
@@ -26,6 +42,8 @@ const MIGRATION_HINTS: Record<string, string> = {
   extract_compact_summary: 'Tool renamed → inspect(session_id: "...")',
 };
 
+// ── Server ──────────────────────────────────────────────────────
+
 class ClaudeHistorianServer {
   private server: McpServer;
   private searchEngine: HistorySearchEngine;
@@ -36,7 +54,7 @@ class ClaudeHistorianServer {
     this.server = new McpServer(
       {
         name: 'claude-historian',
-        version: VERSION,
+        version,
         title: 'Claude Historian',
         description: 'Conversation history search across Claude Code sessions',
       },
@@ -450,7 +468,7 @@ class ClaudeHistorianServer {
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Claude Historian MCP server running on stdio');
+    console.error(`Historian MCP v${version} running on stdio`);
 
     // Keep the process alive by listening for process signals
     process.on('SIGINT', () => {
@@ -476,6 +494,8 @@ class ClaudeHistorianServer {
    * formatDuration, getTimeAgo → only called by dead getEnhancedRecentSessions
    * Full implementations preserved in git history. */
 }
+
+// ── Diagnostics ─────────────────────────────────────────────────
 
 // Doctor diagnostics function
 async function runDoctorDiagnostics(): Promise<void> {
@@ -807,6 +827,8 @@ async function runPerformanceBenchmark(): Promise<{
   }
 }
 
+// ── CLI ─────────────────────────────────────────────────────────
+
 // Handle command line arguments
 const args = process.argv.slice(2);
 
@@ -857,6 +879,6 @@ if (args.includes('--doctor')) {
   process.exit(0);
 }
 
-// Start the server
+// ── Entry point ─────────────────────────────────────────────────
 const server = new ClaudeHistorianServer();
 server.run().catch(console.error);
