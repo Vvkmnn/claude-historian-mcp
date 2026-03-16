@@ -63,6 +63,7 @@ export interface CompactMessage {
     errorPatterns?: string[];
     bashCommands?: string[]; // Extracted bash commands from tool_use
     editDiffs?: string[]; // "old → new" summaries from Edit tool_use inputs
+    skillInvocations?: string[]; // Actual skill names invoked via Skill tool
     claudeInsights?: string[]; // Solutions, explanations from Claude
     codeSnippets?: string[]; // Code blocks and snippets
     actionItems?: string[]; // Next steps and actions

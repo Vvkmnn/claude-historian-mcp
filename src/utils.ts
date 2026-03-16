@@ -344,6 +344,13 @@ export function calculateRelevanceScore(
     }
   }
 
+  // Soft penalty for config-style content (settings reads with boolean listings).
+  // Hard-specific patterns (@claude-plugins-official, etc.) are caught earlier in
+  // isHighlyRelevant(). This catches broader config content that shouldn't rank high.
+  if (isStructuralContent(lowerContent)) {
+    score = Math.floor(score * 0.2);
+  }
+
   return score;
 }
 
@@ -431,6 +438,18 @@ function scoreFileReferences(lowerContent: string): number {
 
 function scoreProjectMatch(message: ClaudeMessage, projectPath?: string): number {
   return projectPath && message.cwd && message.cwd.includes(projectPath) ? PROJECT_MATCH_SCORE : 0;
+}
+
+function isStructuralContent(lowerContent: string): boolean {
+  // Config listings with boolean values (settings.json reads listing plugins/features)
+  if (
+    lowerContent.includes('": true') &&
+    lowerContent.includes('": false') &&
+    (lowerContent.includes('plugin') || lowerContent.includes('enabled'))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function formatTimestamp(timestamp: string): string {

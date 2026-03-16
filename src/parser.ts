@@ -182,6 +182,14 @@ export class ConversationParser {
           // e.g. mcp__tmux__create-session stays as-is, Edit stays as-is
           tools.add(item.name!);
 
+          // For Skill tool, track the specific skill being invoked.
+          // Without this, only generic "Skill" is recorded — losing which skill was used.
+          if (item.name === 'Skill' && item.input?.skill && typeof item.input.skill === 'string') {
+            tools.add(`Skill:${item.input.skill}`);
+            if (!context.skillInvocations) context.skillInvocations = [];
+            context.skillInvocations.push(item.input.skill);
+          }
+
           // Extract file paths from tool parameters
           if (item.input) {
             const input = item.input;

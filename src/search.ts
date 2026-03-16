@@ -368,6 +368,11 @@ export class HistorySearchEngine {
       'what would you like me to',
       'how can i assist',
       "i understand that i'm",
+      // Structural content: settings reads, skill inventories, usage stats.
+      // These contain every installed plugin/skill name, poisoning keyword search.
+      '@claude-plugins-official',
+      '"usagecount"',
+      'tokens[39m',
     ];
 
     if (noisePatterns.some((pattern) => content.includes(pattern)) || content.length < 40) {
@@ -1286,7 +1291,8 @@ export class HistorySearchEngine {
       // Substring match for tool names (e.g. "tmux" matches "mcp__tmux__create-session")
       const toolNameLower = toolName?.toLowerCase();
       const matchesTool = (tool: string): boolean => {
-        if (!toolNameLower) return coreTools.has(tool) || tool.startsWith('mcp__');
+        if (!toolNameLower)
+          return coreTools.has(tool) || tool.startsWith('mcp__') || tool.startsWith('Skill:');
         const tl = tool.toLowerCase();
         return tl.includes(toolNameLower) || toolNameLower.includes(tl);
       };
@@ -1820,6 +1826,13 @@ export class HistorySearchEngine {
       if (toolName === 'Bash' && msg.context?.bashCommands?.length) {
         for (const cmd of msg.context.bashCommands.slice(0, 3)) {
           patterns.push(`$ ${cmd.substring(0, 60)}`);
+        }
+      }
+
+      // Surface actual skill names from Skill tool invocations
+      if (toolName.startsWith('Skill:') && msg.context?.skillInvocations?.length) {
+        for (const skill of msg.context.skillInvocations.slice(0, 3)) {
+          patterns.push(`Skill invoked: ${skill}`);
         }
       }
     }
