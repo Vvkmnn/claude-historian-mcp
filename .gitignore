@@ -25,6 +25,8 @@ demo/.claude/
 
 # npm
 *.tgz
+*.dxt
+isolate-*.log
 
 # Generated docs
 CLAUDE.md

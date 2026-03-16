@@ -1,9 +1,13 @@
 {
   "name": "claude-historian-mcp",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "An MCP server for conversation history search and retrieval in Claude Code",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "bin": {
     "claude-historian-mcp": "./dist/index.js"
   },
@@ -75,7 +79,8 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "zod": "^3.25.76"
   },
   "optionalDependencies": {
     "level": "^10.0.0"

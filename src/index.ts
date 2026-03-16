@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { HistorySearchEngine } from './search.js';
 import { BeautifulFormatter } from './formatter.js';
 import { UniversalHistorySearchEngine } from './universal-engine.js';
 import { CompactMessage } from './types.js';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require('../package.json') as { version: string };
 
 // Migration map: old tool names → new invocation hints
 const MIGRATION_HINTS: Record<string, string> = {
@@ -28,21 +27,22 @@ const MIGRATION_HINTS: Record<string, string> = {
 };
 
 class ClaudeHistorianServer {
-  private server: Server;
+  private server: McpServer;
   private searchEngine: HistorySearchEngine;
   private universalEngine: UniversalHistorySearchEngine;
   private formatter: BeautifulFormatter;
 
   constructor() {
-    this.server = new Server(
+    this.server = new McpServer(
       {
         name: 'claude-historian',
-        version: '1.0.5',
+        version: VERSION,
+        title: 'Claude Historian',
+        description: 'Conversation history search across Claude Code sessions',
       },
       {
-        capabilities: {
-          tools: {},
-        },
+        instructions:
+          'Claude Historian searches your conversation history. Use search(scope) to find past conversations, decisions, errors, files, tools, plans, config, tasks, and memories. Use inspect(sessionId) to summarize a specific session with optional focus and detail level.',
       },
     );
 
@@ -53,142 +53,141 @@ class ClaudeHistorianServer {
   }
 
   private setupToolHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, () => {
-      return {
-        tools: [
-          {
-            name: 'search',
-            description:
-              'Search through Claude Code conversation history, .claude files (rules, skills, agents, plans, CLAUDE.md), memories, and task management data with smart insights',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description:
-                    'Search query to find relevant conversations. Optional for browse-mode scopes (sessions, tools).',
-                },
-                scope: {
-                  type: 'string',
-                  description:
-                    'Search scope: all (default), conversations, files, errors, plans, config, tasks, similar, sessions, tools, memories',
-                  enum: [
-                    'all',
-                    'conversations',
-                    'files',
-                    'errors',
-                    'plans',
-                    'config',
-                    'tasks',
-                    'similar',
-                    'sessions',
-                    'tools',
-                    'memories',
-                  ],
-                  default: 'all',
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of results (default: 10)',
-                  default: 10,
-                },
-                project: {
-                  type: 'string',
-                  description: 'Optional project name to filter results',
-                },
-                filepath: {
-                  type: 'string',
-                  description: 'File path for scope: "files"',
-                },
-                timeframe: {
-                  type: 'string',
-                  description: 'Time range filter (today, week, month)',
-                },
-              },
-            },
-          },
-          {
-            name: 'inspect',
-            description: 'Get intelligent summary of a conversation session with key insights',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                session_id: {
-                  type: 'string',
-                  description: 'Session ID to summarize',
-                },
-                detail_level: {
-                  type: 'string',
-                  description: 'Response detail: summary (default), detailed, raw',
-                  enum: ['summary', 'detailed', 'raw'],
-                  default: 'summary',
-                },
-                focus: {
-                  type: 'string',
-                  description: 'Focus area: solutions, tools, files, or all',
-                  enum: ['solutions', 'tools', 'files', 'all'],
-                  default: 'all',
-                },
-                max_messages: {
-                  type: 'number',
-                  description: 'Maximum messages to analyze (default: 10)',
-                  default: 10,
-                },
-              },
-              required: ['session_id'],
-            },
-          },
-        ],
-      };
-    });
+    // Migration layer: register deprecated tool names with helpful redirect errors
+    for (const [oldName, hint] of Object.entries(MIGRATION_HINTS)) {
+      this.server.registerTool(
+        oldName,
+        {
+          title: oldName,
+          description: hint,
+          inputSchema: {},
+        },
+        () => ({
+          content: [{ type: 'text' as const, text: hint }],
+          isError: true,
+        }),
+      );
+    }
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      try {
-        const { name, arguments: args } = request.params;
-
-        // Migration layer: old tool names return helpful errors
-        if (MIGRATION_HINTS[name]) {
+    this.server.registerTool(
+      'search',
+      {
+        title: 'Search History',
+        description:
+          'Search through Claude Code conversation history, .claude files (rules, skills, agents, plans, CLAUDE.md), memories, and task management data with smart insights',
+        inputSchema: {
+          query: z
+            .string()
+            .optional()
+            .describe(
+              'Search query to find relevant conversations. Optional for browse-mode scopes (sessions, tools).',
+            ),
+          scope: z
+            .enum([
+              'all',
+              'conversations',
+              'files',
+              'errors',
+              'plans',
+              'config',
+              'tasks',
+              'similar',
+              'sessions',
+              'tools',
+              'memories',
+            ])
+            .optional()
+            .default('all')
+            .describe(
+              'Search scope: all (default), conversations, files, errors, plans, config, tasks, similar, sessions, tools, memories',
+            ),
+          detail_level: z
+            .enum(['summary', 'detailed', 'raw'])
+            .optional()
+            .default('summary')
+            .describe('Response detail: summary (default), detailed, raw'),
+          limit: z
+            .number()
+            .optional()
+            .default(10)
+            .describe('Maximum number of results (default: 10)'),
+          project: z.string().optional().describe('Optional project name to filter results'),
+          filepath: z.string().optional().describe('File path for scope: "files"'),
+          timeframe: z.string().optional().describe('Time range filter (today, week, month)'),
+        },
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+        },
+      },
+      async (args) => {
+        try {
+          return await this.handleSearch(args as Record<string, unknown>);
+        } catch (error) {
+          console.error('Tool execution error:', error);
           return {
             content: [
               {
-                type: 'text',
-                text: MIGRATION_HINTS[name],
+                type: 'text' as const,
+                text: `Error executing search: ${error instanceof Error ? error.message : String(error)}`,
               },
             ],
             isError: true,
           };
         }
+      },
+    );
 
-        switch (name) {
-          case 'search':
-            return await this.handleSearch(args || {});
-
-          case 'inspect':
-            return await this.handleInspect(args || {});
-
-          default:
-            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    this.server.registerTool(
+      'inspect',
+      {
+        title: 'Inspect Session',
+        description: 'Get intelligent summary of a conversation session with key insights',
+        inputSchema: {
+          session_id: z.string().describe('Session ID to summarize'),
+          detail_level: z
+            .enum(['summary', 'detailed', 'raw'])
+            .optional()
+            .default('summary')
+            .describe('Response detail: summary (default), detailed, raw'),
+          focus: z
+            .enum(['solutions', 'tools', 'files', 'all'])
+            .optional()
+            .default('all')
+            .describe('Focus area: solutions, tools, files, or all'),
+          max_messages: z
+            .number()
+            .optional()
+            .default(10)
+            .describe('Maximum messages to analyze (default: 10)'),
+        },
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+        },
+      },
+      async (args) => {
+        try {
+          return await this.handleInspect(args as Record<string, unknown>);
+        } catch (error) {
+          console.error('Tool execution error:', error);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error executing inspect: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            ],
+            isError: true,
+          };
         }
-      } catch (error) {
-        if (error instanceof McpError) throw error;
-        console.error('Tool execution error:', error);
-        throw new McpError(
-          ErrorCode.InternalError,
-          `Error executing ${request.params.name}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    });
+      },
+    );
   }
 
   private async handleSearch(
     args: Record<string, unknown>,
-  ): Promise<{ content: { type: string; text: string }[] }> {
+  ): Promise<{ content: { type: 'text'; text: string }[] }> {
     const scope = (args.scope as string) || 'all';
     const query = args.query as string | undefined;
     const limit = (args.limit as number) || 10;
@@ -200,7 +199,7 @@ class ClaudeHistorianServer {
     // Validate: most scopes require a query
     const queryRequired = !['sessions', 'tools', 'files'].includes(scope);
     if (queryRequired && !query) {
-      throw new McpError(ErrorCode.InvalidParams, `scope "${scope}" requires a "query" parameter`);
+      throw new Error(`scope "${scope}" requires a "query" parameter`);
     }
 
     switch (scope) {
@@ -217,10 +216,7 @@ class ClaudeHistorianServer {
 
       case 'files': {
         if (!filepath) {
-          throw new McpError(
-            ErrorCode.InvalidParams,
-            'scope "files" requires a "filepath" parameter',
-          );
+          throw new Error('scope "files" requires a "filepath" parameter');
         }
         const result = await this.universalEngine.findFileContext(filepath, limit);
         const text = this.formatter.formatFileContext(result.results, filepath, detailLevel);
@@ -419,13 +415,13 @@ class ClaudeHistorianServer {
 
   private async handleInspect(
     args: Record<string, unknown>,
-  ): Promise<{ content: { type: string; text: string }[] }> {
+  ): Promise<{ content: { type: 'text'; text: string }[] }> {
     const sessionId = args.session_id as string;
     const maxMessages = (args.max_messages as number) || 10;
     const focus = (args.focus as string) || 'all';
 
     if (!sessionId) {
-      throw new McpError(ErrorCode.InvalidParams, 'session_id is required');
+      throw new Error('session_id is required');
     }
 
     const result = await this.universalEngine.generateCompactSummary(sessionId, maxMessages, focus);
