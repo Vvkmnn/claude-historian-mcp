@@ -1,11 +1,25 @@
+/**
+ * Shared type definitions for the Historian MCP server.
+ *
+ * All interfaces consumed by the parser, search engine, formatter,
+ * and universal engine live here. No runtime logic — types only.
+ */
+
+// ── Raw JSONL types ────────────────────────────────────────────────
+
+/** A single content block inside a Claude API message. */
 export interface MessageContentBlock {
   type: string;
   text?: string;
+  /** Tool name (present when `type === "tool_use"`). */
   name?: string;
+  /** Tool input parameters (present when `type === "tool_use"`). */
   input?: Record<string, unknown>;
+  /** Nested content — string for tool results, array for composite blocks. */
   content?: string | MessageContentBlock[];
 }
 
+/** Raw message record as stored in Claude Code JSONL session files. */
 export interface ClaudeMessage {
   parentUuid: string | null;
   isSidechain: boolean;
@@ -29,9 +43,13 @@ export interface ClaudeMessage {
   uuid: string;
   timestamp: string;
   requestId?: string;
+  /** Human-readable session name (e.g. "curried-zooming-charm"). */
   slug?: string;
 }
 
+// ── Processed / search types ───────────────────────────────────────
+
+/** Aggregated session summary produced by `generateCompactSummary`. */
 export interface CompactSummaryData {
   session_id: string;
   end_time: string | undefined | null;
@@ -45,6 +63,12 @@ export interface CompactSummaryData {
   key_decisions: string[];
 }
 
+/**
+ * Parsed and scored message used throughout search and formatting.
+ *
+ * Fields prefixed with `_` are lazy-computed caches — populated on
+ * first access to avoid redundant work in hot scoring loops.
+ */
 export interface CompactMessage {
   uuid: string;
   timestamp: string;
@@ -53,31 +77,46 @@ export interface CompactMessage {
   sessionId: string;
   projectPath?: string;
   relevanceScore?: number;
-  finalScore?: number; // For enhanced scoring calculations
-  sessionSlug?: string; // Human-readable session name (e.g., "curried-zooming-charm")
-  _contentLower?: string; // Lazy-cached content.toLowerCase() — avoid recomputing in hot loops
-  _contentType?: 'code' | 'error' | 'technical' | 'conversational'; // Lazy-cached detectContentType()
+  /** Combined score after all boost passes. */
+  finalScore?: number;
+  /** Human-readable session name (e.g. "curried-zooming-charm"). */
+  sessionSlug?: string;
+  /** @internal Lazy-cached `content.toLowerCase()`. */
+  _contentLower?: string;
+  /** @internal Lazy-cached content type classification. */
+  _contentType?: 'code' | 'error' | 'technical' | 'conversational';
+  /** Structured metadata extracted from the raw message. */
   context?: {
     filesReferenced?: string[];
     toolsUsed?: string[];
     errorPatterns?: string[];
-    bashCommands?: string[]; // Extracted bash commands from tool_use
-    editDiffs?: string[]; // "old → new" summaries from Edit tool_use inputs
-    skillInvocations?: string[]; // Actual skill names invoked via Skill tool
-    claudeInsights?: string[]; // Solutions, explanations from Claude
-    codeSnippets?: string[]; // Code blocks and snippets
-    actionItems?: string[]; // Next steps and actions
-    progressInfo?: string[]; // Progress lines: "Progress: X/Y done", task status
+    /** Extracted bash commands from tool_use inputs. */
+    bashCommands?: string[];
+    /** "old -> new" summaries from Edit tool_use inputs. */
+    editDiffs?: string[];
+    /** Actual skill names invoked via the Skill tool. */
+    skillInvocations?: string[];
+    /** Solutions and explanations from Claude assistant messages. */
+    claudeInsights?: string[];
+    /** Code blocks and inline snippets. */
+    codeSnippets?: string[];
+    /** Next steps and action items. */
+    actionItems?: string[];
+    /** Progress lines: "Progress: X/Y done", task status. */
+    progressInfo?: string[];
   };
 }
 
+/** Paginated search result returned by `searchConversations` and friends. */
 export interface SearchResult {
   messages: CompactMessage[];
   totalResults: number;
   searchQuery: string;
+  /** Wall-clock search time in milliseconds. */
   executionTime: number;
 }
 
+/** File-centric view of all operations touching a given path. */
 export interface FileContext {
   filePath: string;
   lastModified: string;
@@ -90,10 +129,12 @@ export interface FileContext {
   insights?: string[];
 }
 
+/** An error pattern paired with the messages that resolved it. */
 export interface ErrorSolution {
   errorPattern: string;
   solution: CompactMessage[];
   context: string;
+  /** How many times this error pattern was encountered. */
   frequency: number;
   successRate?: number;
   averageResolutionTime?: number;
@@ -103,6 +144,7 @@ export interface ErrorSolution {
   intelligentInsights?: string[];
 }
 
+/** Usage patterns and best practices for a specific tool. */
 export interface ToolPattern {
   toolName: string;
   successfulUsages: CompactMessage[];
@@ -114,6 +156,9 @@ export interface ToolPattern {
   intelligentInsights?: string[];
 }
 
+// ── Session / plan types ───────────────────────────────────────────
+
+/** Minimal session metadata tracked during JSONL parsing. */
 export interface ConversationSession {
   sessionId: string;
   projectPath: string;
@@ -123,22 +168,27 @@ export interface ConversationSession {
   summary?: string;
 }
 
+/** A plan file matched by `searchPlans`. */
 export interface PlanResult {
   name: string;
   filepath: string;
   title: string | null;
   content: string;
+  /** Markdown heading names found in the plan. */
   sections: string[];
+  /** File paths referenced inside the plan body. */
   filesMentioned: string[];
   timestamp: string;
   relevanceScore: number;
 }
 
+/** Wrapper returned by the plan search formatter. */
 export interface PlanSearchResult {
   searchQuery: string;
   plans: PlanResult[];
 }
 
+/** Rich session metadata surfaced by `getRecentSessions`. */
 export interface SessionInfo {
   session_id: string;
   project_path: string;
@@ -151,11 +201,15 @@ export interface SessionInfo {
   tools_used: string[];
   assistant_count: number;
   error_count: number;
+  /** Quality label derived from message density and error rate. */
   session_quality: string;
   accomplishments: string[];
   projectPath?: string;
 }
 
+// ── Query analysis ─────────────────────────────────────────────────
+
+/** Result of heuristic query classification for search optimization. */
 export interface QueryAnalysis {
   type: string;
   urgency: 'high' | 'medium' | 'low';
@@ -163,15 +217,20 @@ export interface QueryAnalysis {
   expectsCode: boolean;
   expectsSolution: boolean;
   keywords: string[];
+  /** Per-keyword multiplicative boosts applied during scoring. */
   semanticBoosts: Record<string, number>;
 }
 
+// ── Supporting types ───────────────────────────────────────────────
+
+/** A single timestamped operation in a file's change timeline. */
 export interface TimelineEntry {
   timestamp: string;
   operation: string;
   message: CompactMessage;
 }
 
+/** One step in a multi-tool workflow sequence. */
 export interface WorkflowStep {
   toolName: string;
   context: string;

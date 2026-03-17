@@ -1,7 +1,21 @@
+/**
+ * Static utility methods for search scoring, deduplication, and query analysis.
+ *
+ * All methods are stateless — the class is used purely as a namespace.
+ * Called by `HistorySearchEngine` to boost, filter, and rank results.
+ */
 import { CompactMessage, FileContext } from './types.js';
 
+// ── Search helpers ─────────────────────────────────────────────────
+
+/** Stateless utility methods for search scoring and query analysis. */
 export class SearchHelpers {
-  // Enhanced semantic query expansion for better search results
+  /**
+   * Expand a query into semantically related terms.
+   *
+   * @param query - Raw user query string.
+   * @returns Deduplicated array of the original query plus synonym expansions.
+   */
   static expandQuery(query: string): string[] {
     const baseQuery = query.toLowerCase().trim();
     const expansions = [baseQuery];
@@ -35,7 +49,12 @@ export class SearchHelpers {
     return [...new Set(expansions)];
   }
 
-  // Intelligent content deduplication
+  /**
+   * Deduplicate messages by content signature, keeping the highest-scoring copy.
+   *
+   * @param messages - Candidate messages (may contain near-duplicates).
+   * @returns Deduplicated array preserving the best-scored variant.
+   */
   static deduplicateByContent(messages: CompactMessage[]): CompactMessage[] {
     const seen = new Map<string, CompactMessage>();
 
@@ -56,7 +75,12 @@ export class SearchHelpers {
     return Array.from(seen.values());
   }
 
-  // Create a content signature for deduplication
+  /**
+   * Create a normalized content signature for deduplication.
+   *
+   * @param message - Message to fingerprint.
+   * @returns String key combining files, tools, errors, and normalized content.
+   */
   static createContentSignature(message: CompactMessage): string {
     const content = message.content.toLowerCase();
 
@@ -75,8 +99,15 @@ export class SearchHelpers {
     return `${files}:${tools}:${errors}:${normalizedContent}`;
   }
 
-  // Calculate importance score based on "pain to rediscover" concept
-  // Inspired by claude-mem's chill mode selective recording
+  /**
+   * Calculate importance score based on "pain to rediscover" heuristic.
+   *
+   * Decisions and bugfixes score highest because they are the hardest
+   * to reconstruct from scratch.
+   *
+   * @param content - Lowercased message content.
+   * @returns Multiplicative boost factor (1.0 = no boost, up to 2.5).
+   */
   static calculateImportanceScore(content: string): number {
     let maxBoost = 1.0;
 
@@ -147,7 +178,13 @@ export class SearchHelpers {
     return maxBoost;
   }
 
-  // Enhanced relevance scoring for Claude's needs
+  /**
+   * Enhanced relevance scoring combining importance, technical boosts, and recency.
+   *
+   * @param message - Scored message to re-rank.
+   * @param query - Original search query.
+   * @returns Final relevance score capped at 10.
+   */
   static calculateClaudeRelevance(message: CompactMessage, query: string): number {
     let score = message.relevanceScore || 0;
     const content = message.content.toLowerCase();
@@ -218,6 +255,14 @@ export class SearchHelpers {
 
     return Math.min(score, 10); // Cap at 10
   }
+  // ── File context helpers ─────────────────────────────────────────────
+
+  /**
+   * Infer the dominant operation type from a set of messages.
+   *
+   * @param messages - Messages referencing a particular file.
+   * @returns The inferred operation type ("edit", "read", etc.).
+   */
   static inferOperationType(messages: CompactMessage[]): FileContext['operationType'] {
     const hasWrites = messages.some(
       (msg) =>
@@ -233,6 +278,19 @@ export class SearchHelpers {
     return 'read';
   }
 
+  // ── Query similarity ─────────────────────────────────────────────────
+
+  /**
+   * Calculate semantic similarity between two queries (0-1).
+   *
+   * Uses word-level matching with technical synonym awareness,
+   * prefix matching, and stemming. Requires at least one significant
+   * word match to return a non-zero score.
+   *
+   * @param query1 - First query string.
+   * @param query2 - Second query string.
+   * @returns Similarity score between 0.0 and 1.0.
+   */
   static calculateQuerySimilarity(query1: string, query2: string): number {
     const words1 = query1
       .toLowerCase()
@@ -378,6 +436,13 @@ export class SearchHelpers {
     return Math.min(baseScore + stemBonus, 1.0);
   }
 
+  /**
+   * Check whether two queries share exact technical keyword matches.
+   *
+   * @param query1 - First query string.
+   * @param query2 - Second query string.
+   * @returns `true` if queries share a tech keyword or 2+ common keywords.
+   */
   static hasExactKeywords(query1: string, query2: string): boolean {
     const keywords1 = query1
       .toLowerCase()
@@ -412,7 +477,13 @@ export class SearchHelpers {
     return hasTechMatch || sharedKeywords.length >= 2 || sharedKeywords.some((k) => k.length > 6);
   }
 
-  // Add partial keyword matching for better recall
+  /**
+   * Check for partial keyword matches (4+ character prefix overlap).
+   *
+   * @param query1 - First query string.
+   * @param query2 - Second query string.
+   * @returns `true` if any word pair shares a 4+ char prefix.
+   */
   static hasPartialKeywords(query1: string, query2: string): boolean {
     const words1 = query1
       .toLowerCase()
@@ -437,6 +508,13 @@ export class SearchHelpers {
     return false;
   }
 
+  /**
+   * Character-level similarity check (60%+ positional character match).
+   *
+   * @param word1 - First word.
+   * @param word2 - Second word.
+   * @returns `true` if words are similar enough by character overlap.
+   */
   static isWordSimilar(word1: string, word2: string): boolean {
     if (Math.abs(word1.length - word2.length) > 3) return false;
 
@@ -453,6 +531,14 @@ export class SearchHelpers {
     return matches >= shared;
   }
 
+  // ── Pattern extraction ───────────────────────────────────────────────
+
+  /**
+   * Extract a brief solution context string from messages.
+   *
+   * @param messages - Solution messages.
+   * @returns Concatenated content truncated to 200 characters.
+   */
   static extractSolutionContext(messages: CompactMessage[]): string {
     return (
       messages
@@ -462,6 +548,12 @@ export class SearchHelpers {
     );
   }
 
+  /**
+   * Extract common tool combo and file type patterns from messages.
+   *
+   * @param messages - Messages to analyze.
+   * @returns Human-readable pattern strings (e.g. "Read -> Edit (3x successful)").
+   */
   static extractCommonPatterns(messages: CompactMessage[]): string[] {
     const patterns = new Set<string>();
     const toolCombos = new Map<string, number>();
@@ -501,6 +593,7 @@ export class SearchHelpers {
     return Array.from(patterns);
   }
 
+  /** Return default best-practice strings (placeholder for future extraction). */
   static extractBestPractices(): string[] {
     return [
       'Use appropriate tools for file operations',
@@ -509,6 +602,17 @@ export class SearchHelpers {
     ];
   }
 
+  /**
+   * Check whether content contains a given error pattern.
+   *
+   * Handles specific error codes (ENOENT, TypeError, etc.) separately
+   * from generic error phrases, requiring progressively stricter matching
+   * for more specific patterns.
+   *
+   * @param content - Message content to search.
+   * @param errorPattern - Error pattern or phrase to match.
+   * @returns `true` if the content matches the error pattern.
+   */
   static hasErrorInContent(content: string, errorPattern: string): boolean {
     const lowerContent = content.toLowerCase();
     // Strip punctuation from pattern to handle "npm ERR!", "Error:", etc.

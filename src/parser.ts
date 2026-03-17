@@ -1,7 +1,15 @@
+/**
+ * JSONL session file parser for Claude Code conversation history.
+ *
+ * Reads `.jsonl` session files, extracts structured context (files,
+ * tools, errors, insights), scores messages against an optional query,
+ * and produces `CompactMessage` arrays consumed by the search engine.
+ */
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import { stat, readFile } from 'fs/promises';
 import { join } from 'path';
+
 import { ClaudeMessage, CompactMessage, ConversationSession } from './types.js';
 import {
   getClaudeProjectsPath,
@@ -11,13 +19,39 @@ import {
   formatTimestamp,
 } from './utils.js';
 
-// Files under this size use readFile + split (2x faster than streaming).
-// Benchmarked crossover at ~400KB — readline's event-loop overhead dominates below.
+// ── Constants ──────────────────────────────────────────────────────
+
+/**
+ * Files under this size use `readFile` + `split` (2x faster than streaming).
+ *
+ * @remarks
+ * Benchmarked crossover at ~400 KB — readline's event-loop overhead
+ * dominates below that threshold.
+ */
 const SMALL_FILE_THRESHOLD = 400_000;
 
+// ── Parser class ───────────────────────────────────────────────────
+
+/**
+ * Parses Claude Code JSONL session files into scored `CompactMessage` arrays.
+ *
+ * Uses a two-phase search strategy: cheap raw-string pre-filter on each
+ * JSONL line, then full JSON parse + context extraction only for hits.
+ */
 export class ConversationParser {
   private sessions: Map<string, ConversationSession> = new Map();
 
+  /**
+   * Parse a single JSONL session file into scored messages.
+   *
+   * @param projectDir - Encoded project directory name.
+   * @param filename - JSONL filename within the project directory.
+   * @param query - Optional search query for relevance scoring.
+   * @param timeFilter - Optional predicate to restrict by timestamp.
+   * @param preFilterTerms - Optional terms for line-level pre-filter
+   *   (lets non-query methods skip irrelevant lines).
+   * @returns Array of parsed and scored compact messages.
+   */
   async parseJsonlFile(
     projectDir: string,
     filename: string,
@@ -140,6 +174,8 @@ export class ConversationParser {
 
     return messages;
   }
+
+  // ── Context extraction ──────────────────────────────────────────────
 
   private extractContext(message: ClaudeMessage, content: string): CompactMessage['context'] {
     const context: CompactMessage['context'] = {};
@@ -312,7 +348,9 @@ export class ConversationParser {
     return Object.keys(context).length > 0 ? context : undefined;
   }
 
-  // Adaptive content limit based on content type - more space for code/technical content
+  // ── Content preservation ────────────────────────────────────────────
+
+  /** Adaptive content limit based on content type — more space for code/technical. */
   private getContentLimit(content: string): number {
     const contentType = this.detectContentType(content);
     switch (contentType) {
@@ -327,6 +365,16 @@ export class ConversationParser {
     }
   }
 
+  /**
+   * Truncate content while preserving the most valuable portions.
+   *
+   * Detects content type (code, error, technical, conversational) and
+   * applies a type-specific preservation strategy.
+   *
+   * @param content - Raw message content.
+   * @param maxLength - Maximum character budget.
+   * @returns Truncated content with key information preserved.
+   */
   public smartContentPreservation(content: string, maxLength: number): string {
     if (content.length <= maxLength) return content;
 
@@ -488,7 +536,9 @@ export class ConversationParser {
     return content.substring(0, maxLength - 3) + '...';
   }
 
-  // Extract Claude's most valuable insights from assistant messages
+  // ── Insight and metadata extraction ─────────────────────────────────
+
+  /** Extract Claude's most valuable insights from assistant messages. */
   private extractClaudeInsights(content: string): string[] {
     const insights: string[] = [];
 
@@ -527,7 +577,7 @@ export class ConversationParser {
     return insights.slice(0, 3); // Top 3 most valuable insights
   }
 
-  // Extract code snippets with context - balanced limit for actionable content
+  /** Extract code snippets with context — balanced limit for actionable content. */
   private extractCodeSnippets(content: string): string[] {
     const snippets: string[] = [];
 
@@ -553,7 +603,7 @@ export class ConversationParser {
     return snippets.slice(0, 5); // Top 5 code snippets for better coverage
   }
 
-  // Extract actionable items and next steps
+  /** Extract actionable items and next steps. */
   private extractActionItems(content: string): string[] {
     const actions: string[] = [];
 
@@ -604,7 +654,7 @@ export class ConversationParser {
     return progress.slice(0, 8);
   }
 
-  // Extract the most valuable content by prioritizing sentences with high information density
+  /** Extract the most valuable content by prioritizing high-information-density sentences. */
   private extractMostValuableContent(content: string, maxLength: number): string {
     // For structured content (code, errors), preserve original order and structure
     if (this.hasStructuredContent(content)) {
@@ -763,6 +813,8 @@ export class ConversationParser {
     return result.trim();
   }
 
+  // ── Session tracking ────────────────────────────────────────────────
+
   private updateSessionInfo(message: ClaudeMessage, projectDir: string): void {
     const sessionId = message.sessionId;
 
@@ -794,10 +846,17 @@ export class ConversationParser {
     }
   }
 
+  /**
+   * Retrieve a tracked session by ID.
+   *
+   * @param sessionId - The session UUID.
+   * @returns Session metadata, or `undefined` if not yet seen.
+   */
   getSession(sessionId: string): ConversationSession | undefined {
     return this.sessions.get(sessionId);
   }
 
+  /** Return all tracked sessions sorted by end time (most recent first). */
   getAllSessions(): ConversationSession[] {
     return Array.from(this.sessions.values()).sort(
       (a, b) => new Date(b.endTime).getTime() - new Date(a.endTime).getTime(),

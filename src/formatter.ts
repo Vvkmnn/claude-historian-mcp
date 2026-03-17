@@ -1,4 +1,10 @@
-// Scroll-corner border formatter for Claude Historian MCP
+/**
+ * Scroll-corner border formatter for MCP tool output.
+ *
+ * Every tool response is wrapped in a half-box border with a scroll emoji
+ * as the top-left corner. The format maximizes information density while
+ * remaining visually scannable in Claude Code's output pane.
+ */
 import {
   CompactMessage,
   SearchResult,
@@ -10,17 +16,25 @@ import {
   CompactSummaryData,
 } from './types.js';
 
+/** Utility type: augment `T` with a numeric `score` field. */
 type Scored<T> = T & { score: number };
 
+// ── Layout helpers ─────────────────────────────────────────────────
+
 /**
- * Scroll-corner half-box border formatter.
- * Scroll emoji acts as top-left corner, thin lines extend from it.
+ * Wrap content in a scroll-corner half-box border.
  *
+ * ```
  *  📜 ── search "query" ── 5 results
  *
  *   │   {line1}
  *   │   {line2}
  *   └   {lastLine}
+ * ```
+ *
+ * @param header - The top-line summary (query, result count, token estimate).
+ * @param body - Multi-line content to wrap.
+ * @returns Formatted string ready for MCP tool output.
  */
 function fmt(header: string, body: string): string {
   const lines = body.split('\n');
@@ -31,7 +45,12 @@ function fmt(header: string, body: string): string {
   return [top, '', ...mid, bot].join('\n');
 }
 
-/** Normalize raw additive scores to 0-100 range within a result set. */
+/**
+ * Normalize raw additive scores to 0-100 range within a result set.
+ *
+ * @param items - Array of scored objects.
+ * @returns The same array with `score` fields scaled to 0-100.
+ */
 function normalizeScores<T extends { score?: number | null }>(items: T[]): T[] {
   const scores = items.map((i) => i.score ?? 0).filter((s) => s > 0);
   if (scores.length === 0) return items;
@@ -43,17 +62,38 @@ function normalizeScores<T extends { score?: number | null }>(items: T[]): T[] {
   }));
 }
 
-/** Approximate token count (chars/4 heuristic, no tokenizer dependency). */
+/**
+ * Approximate token count using a chars/4 heuristic.
+ *
+ * @param text - Raw text to estimate.
+ * @returns Estimated token count (ceiling).
+ */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Truncate content for summary mode — keep first 200 chars, strip code blocks. */
+/**
+ * Truncate content for summary mode.
+ *
+ * Strips fenced code blocks and collapses whitespace before truncating
+ * to 200 characters.
+ *
+ * @param content - Full message content.
+ * @returns Abbreviated content suitable for summary-level display.
+ */
 function summarizeContent(content: string): string {
   const stripped = content.replace(/```[\s\S]*?```/g, '[code]').replace(/\n{2,}/g, '\n');
   return stripped.length > 200 ? stripped.substring(0, 200) + '...' : stripped;
 }
 
+// ── Formatter class ────────────────────────────────────────────────
+
+/**
+ * Formats MCP tool results into scroll-corner bordered output.
+ *
+ * Each public `format*` method corresponds to one MCP tool. Results are
+ * JSON-structured, score-normalized, and wrapped in the half-box border.
+ */
 export class BeautifulFormatter {
   constructor() {
     // Scroll-corner border formatter with maximum information density
@@ -221,6 +261,12 @@ export class BeautifulFormatter {
     return result.trim() + '...';
   }
 
+  /**
+   * Return a content-type-aware character budget for display truncation.
+   *
+   * @param content - Raw message content to classify.
+   * @returns Character limit (400-700) tuned to the detected content type.
+   */
   public getDynamicDisplayLength(content: string): number {
     const contentType = this.detectContentType(content);
 
@@ -236,8 +282,16 @@ export class BeautifulFormatter {
     }
   }
 
-  // MCP Tool Operation Formatters
+  // ── MCP tool operation formatters ───────────────────────────────────
 
+  /**
+   * Format `search_conversations` results.
+   *
+   * @param result - Raw search results.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatSearchConversations(
     result: SearchResult,
     detailLevel: string = 'summary',
@@ -283,6 +337,14 @@ export class BeautifulFormatter {
     return fmt(`${header} · ${tokens} tokens`, text);
   }
 
+  /**
+   * Format `search_config` results.
+   *
+   * @param result - Raw search results.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatConfigSearch(
     result: SearchResult,
     detailLevel: string = 'summary',
@@ -325,6 +387,14 @@ export class BeautifulFormatter {
     return fmt(`${header} · ${estimateTokens(text)} tokens`, text);
   }
 
+  /**
+   * Format `search_tasks` results.
+   *
+   * @param result - Raw search results.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatTaskSearch(result: SearchResult, detailLevel: string = 'summary', limit?: number): string {
     const header = `tasks "${result.searchQuery}" ── ${result.messages.length} results`;
 
@@ -362,6 +432,14 @@ export class BeautifulFormatter {
     return fmt(`${header} · ${estimateTokens(text)} tokens`, text);
   }
 
+  /**
+   * Format `search_memories` results.
+   *
+   * @param result - Raw search results.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatMemorySearch(
     result: SearchResult,
     detailLevel: string = 'summary',
@@ -403,6 +481,15 @@ export class BeautifulFormatter {
     return fmt(`${header} · ${estimateTokens(text)} tokens`, text);
   }
 
+  /**
+   * Format `find_similar_queries` results.
+   *
+   * @param queries - Matched similar query messages.
+   * @param originalQuery - The user's original query string.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatSimilarQueries(
     queries: CompactMessage[],
     originalQuery: string,
@@ -479,6 +566,14 @@ export class BeautifulFormatter {
       .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
   }
 
+  /**
+   * Format `find_file_context` results.
+   *
+   * @param contexts - File operation contexts found.
+   * @param filepath - The queried file path.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @returns Scroll-bordered formatted string.
+   */
   formatFileContext(
     contexts: FileContext[],
     filepath: string,
@@ -544,7 +639,7 @@ export class BeautifulFormatter {
       .sort((a, b) => b.score - a.score);
   }
 
-  // Extract actual file changes from Edit tool usage
+  /** Extract actual file changes from Edit tool usage. */
   private extractFileChanges(messages: CompactMessage[], filepath: string): string[] {
     const changes: string[] = [];
     const filename = filepath.split('/').pop() || filepath;
@@ -590,6 +685,15 @@ export class BeautifulFormatter {
     return [...new Set(changes)].slice(0, 5);
   }
 
+  /**
+   * Format `get_error_solutions` results.
+   *
+   * @param solutions - Matched error/solution pairs.
+   * @param errorPattern - The queried error pattern.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatErrorSolutions(
     solutions: ErrorSolution[],
     errorPattern: string,
@@ -663,6 +767,15 @@ export class BeautifulFormatter {
       .sort((a, b) => b.score - a.score);
   }
 
+  /**
+   * Format `find_tool_patterns` results.
+   *
+   * @param patterns - Matched tool usage patterns.
+   * @param toolName - Optional tool name filter.
+   * @param limit - Maximum results to include.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @returns Scroll-bordered formatted string.
+   */
   formatToolPatterns(
     patterns: ToolPattern[],
     toolName?: string,
@@ -737,6 +850,15 @@ export class BeautifulFormatter {
       .sort((a, b) => b.score - a.score);
   }
 
+  /**
+   * Format `list_recent_sessions` results.
+   *
+   * @param sessions - Session metadata records.
+   * @param project - Optional project name filter.
+   * @param limit - Maximum results to include.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @returns Scroll-bordered formatted string.
+   */
   formatRecentSessions(
     sessions: SessionInfo[],
     project?: string,
@@ -803,6 +925,13 @@ export class BeautifulFormatter {
       .sort((a, b) => b.score - a.score);
   }
 
+  /**
+   * Format `extract_compact_summary` / `inspect` results.
+   *
+   * @param sessions - Summary data (typically one element).
+   * @param sessionId - Optional session ID used in the header.
+   * @returns Scroll-bordered formatted string.
+   */
   formatCompactSummary(sessions: CompactSummaryData[], sessionId?: string): string {
     if (sessions.length === 0) {
       const filter = sessionId ? `"${sessionId}"` : 'latest';
@@ -830,6 +959,14 @@ export class BeautifulFormatter {
     return fmt(header, JSON.stringify(structured, null, 2));
   }
 
+  /**
+   * Format `search_plans` results.
+   *
+   * @param result - Plan search results with relevance scores.
+   * @param detailLevel - "summary" (default), "detailed", or "raw".
+   * @param limit - Maximum results to include.
+   * @returns Scroll-bordered formatted string.
+   */
   formatPlanSearch(
     result: PlanSearchResult,
     detailLevel: string = 'summary',

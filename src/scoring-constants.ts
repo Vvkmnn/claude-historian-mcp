@@ -1,29 +1,68 @@
-// Scoring constants for Claude Code conversation relevance
-// These weights are tuned based on what makes conversations most useful for Claude
+/**
+ * Scoring constants for conversation relevance ranking.
+ *
+ * Weights are tuned for Claude Code conversations where technical
+ * specificity (exact framework/tool names) matters more than generic
+ * keyword overlap. See `calculateRelevanceScore` in `utils.ts`.
+ */
 
-// Core scoring weights
-export const EXACT_MATCH_SCORE = 10; // Exact tech term match (e.g., "react" query matches "React")
-export const SUPPORTING_TERM_SCORE = 3; // 5+ char supporting terms
-export const WORD_MATCH_SCORE = 2; // General word matches
-export const EXACT_PHRASE_BONUS = 5; // Full query phrase appears
-export const MAJORITY_MATCH_BONUS = 4; // 60%+ of query words match
+// ── Core scoring weights ───────────────────────────────────────────
 
-// Context scoring weights
-export const TOOL_USAGE_SCORE = 5; // Message uses tools
-export const FILE_REFERENCE_SCORE = 3; // Contains file paths
-export const PROJECT_MATCH_SCORE = 5; // Matches project context
-export const PROJECT_NAME_BOOST = 3; // Boost when query term matches project directory name
+/** Exact tech term match (e.g. "react" query matches "React"). */
+export const EXACT_MATCH_SCORE = 10;
 
-// Scoring caps
-export const MAX_MULTIPLICATIVE_BOOST = 4; // Cap for per-term multiplicative boost
+/** 5+ char supporting terms that are not core tech or generic. */
+export const SUPPORTING_TERM_SCORE = 3;
 
-// Core tech patterns - specific frameworks/tools that MUST match for relevance
-// These are "must-match" terms: if query contains them, content MUST also contain them
+/** General word matches (case-insensitive). */
+export const WORD_MATCH_SCORE = 2;
+
+/** Bonus when the full query phrase appears verbatim. */
+export const EXACT_PHRASE_BONUS = 5;
+
+/** Bonus when 60%+ of query words match. */
+export const MAJORITY_MATCH_BONUS = 4;
+
+// ── Context scoring weights ────────────────────────────────────────
+
+/** Bonus for messages that use tools (tool_use / tool_result). */
+export const TOOL_USAGE_SCORE = 5;
+
+/** Bonus for messages containing file path references. */
+export const FILE_REFERENCE_SCORE = 3;
+
+/** Bonus when message CWD matches the queried project. */
+export const PROJECT_MATCH_SCORE = 5;
+
+/** Boost when a query term matches the project directory name. */
+export const PROJECT_NAME_BOOST = 3;
+
+// ── Scoring caps ───────────────────────────────────────────────────
+
+/** Maximum multiplicative boost applied per term. */
+export const MAX_MULTIPLICATIVE_BOOST = 4;
+
+// ── Core tech pattern ──────────────────────────────────────────────
+
+/**
+ * Regex matching specific framework/tool names that act as "must-match" terms.
+ *
+ * @remarks
+ * If a query contains one of these terms, content that lacks the term
+ * receives a heavy penalty (but is not discarded — soft filter only).
+ */
 export const CORE_TECH_PATTERN =
   /^(webpack|docker|react|vue|angular|node|npm|yarn|typescript|python|rust|go|java|kubernetes|aws|gcp|azure|postgres|mysql|redis|mongodb|graphql|rest|grpc|oauth|jwt|git|github|gitlab|jenkins|nginx|apache|eslint|prettier|babel|vite|rollup|esbuild|jest|mocha|cypress|playwright|nextjs|nuxt|svelte|tailwind|sass|less|vitest|pnpm|turborepo|prisma|drizzle|sequelize|sqlite|leveldb|indexeddb)$/i;
 
-// Generic terms that should NOT become core terms even if 5+ chars
-// These appear in many contexts and don't indicate specific technical relevance
+// ── Generic terms ──────────────────────────────────────────────────
+
+/**
+ * Words that should never become core scoring terms even if 5+ characters.
+ *
+ * @remarks
+ * These appear across many contexts and do not indicate specific
+ * technical relevance. Filtering them prevents false-positive boosts.
+ */
 export const GENERIC_TERMS = new Set([
   // Action words
   'config',

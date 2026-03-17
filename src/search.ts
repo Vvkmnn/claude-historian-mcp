@@ -1,3 +1,10 @@
+/**
+ * Core search engine for Claude Code conversation history.
+ *
+ * Scans JSONL session files across all projects, scores and ranks
+ * messages, and exposes high-level search operations consumed by
+ * the MCP tool handlers in `index.ts`.
+ */
 import { ConversationParser } from './parser.js';
 import {
   CompactMessage,
@@ -22,15 +29,28 @@ import {
 } from './utils.js';
 import { readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
+
 import { SearchHelpers } from './search-helpers.js';
 import { PROJECT_NAME_BOOST, MAX_MULTIPLICATIVE_BOOST } from './scoring-constants.js';
 
-/** Lazily cache and return content.toLowerCase() to avoid recomputing in hot loops */
+// ── Helpers ────────────────────────────────────────────────────────
+
+/** Lazily cache and return `content.toLowerCase()` to avoid recomputing in hot loops. */
 function getContentLower(msg: CompactMessage): string {
   if (!msg._contentLower) msg._contentLower = msg.content.toLowerCase();
   return msg._contentLower;
 }
 
+// ── Search engine ──────────────────────────────────────────────────
+
+/**
+ * Full-text search engine over Claude Code conversation history.
+ *
+ * Scans JSONL session files across all `~/.claude/projects/` directories,
+ * scores messages with multi-signal relevance ranking, and provides
+ * high-level search operations (conversations, errors, tools, plans,
+ * config, memories, tasks).
+ */
 export class HistorySearchEngine {
   private parser: ConversationParser;
   // messageCache removed: cache key was ${projectDir}/${file} without query,
@@ -87,8 +107,17 @@ export class HistorySearchEngine {
     }
   }
 
-  // Optimized search for maximum relevance with minimal tokens
+  // ── Conversation search ──────────────────────────────────────────────
 
+  /**
+   * Search conversation history for messages matching a query.
+   *
+   * @param query - Free-text search query.
+   * @param projectFilter - Optional project path or name to restrict scope.
+   * @param timeframe - Optional time window ("today", "week", "month").
+   * @param limit - Maximum results (default 15).
+   * @returns Scored and ranked search results.
+   */
   async searchConversations(
     query: string,
     projectFilter?: string,
@@ -881,6 +910,15 @@ export class HistorySearchEngine {
     }
   }
 
+  // ── File context search ─────────────────────────────────────────────
+
+  /**
+   * Find all operations touching a specific file path.
+   *
+   * @param filePath - Absolute or relative file path to search for.
+   * @param limit - Maximum file context entries (default 25).
+   * @returns File contexts sorted by most recent modification.
+   */
   async findFileContext(filePath: string, limit: number = 25): Promise<FileContext[]> {
     const fileContexts: FileContext[] = [];
 
@@ -1007,6 +1045,15 @@ export class HistorySearchEngine {
     }
   }
 
+  // ── Similar query search ────────────────────────────────────────────
+
+  /**
+   * Find past user queries semantically similar to the target.
+   *
+   * @param targetQuery - The query to find similar matches for.
+   * @param limit - Maximum results (default 10).
+   * @returns User messages with high semantic similarity scores.
+   */
   async findSimilarQueries(targetQuery: string, limit: number = 10): Promise<CompactMessage[]> {
     const cacheKey = `similar|${targetQuery}|${limit}`;
     const cached = this.getCached<CompactMessage[]>(cacheKey);
@@ -1084,6 +1131,17 @@ export class HistorySearchEngine {
     }
   }
 
+  // ── Error solution search ───────────────────────────────────────────
+
+  /**
+   * Find past solutions for a given error pattern.
+   *
+   * @param errorPattern - Error message or pattern to search for.
+   * @param limit - Maximum solutions (default 10).
+   * @param project - Optional project filter.
+   * @param timeframe - Optional time window.
+   * @returns Error/solution pairs ranked by frequency and actionability.
+   */
   async getErrorSolutions(
     errorPattern: string,
     limit: number = 10,
@@ -1252,6 +1310,17 @@ export class HistorySearchEngine {
     }
   }
 
+  // ── Tool pattern search ─────────────────────────────────────────────
+
+  /**
+   * Discover usage patterns and best practices for tools.
+   *
+   * @param toolName - Optional tool name to filter (all tools if omitted).
+   * @param limit - Maximum patterns (default 20).
+   * @param project - Optional project filter.
+   * @param timeframe - Optional time window.
+   * @returns Tool patterns with usage counts and practice recommendations.
+   */
   async getToolPatterns(
     toolName?: string,
     limit: number = 20,
@@ -1513,6 +1582,16 @@ export class HistorySearchEngine {
     }
   }
 
+  // ── Session listing ─────────────────────────────────────────────────
+
+  /**
+   * List recent sessions with metadata and accomplishment summaries.
+   *
+   * @param limit - Maximum sessions (default 10).
+   * @param project - Optional project filter.
+   * @param timeframe - Optional time window.
+   * @returns Session info records sorted by recency.
+   */
   async getRecentSessions(
     limit: number = 10,
     project?: string,
@@ -1708,6 +1787,13 @@ export class HistorySearchEngine {
     return [...new Set(accomplishments)].slice(0, 3);
   }
 
+  /**
+   * Retrieve all messages from a specific session.
+   *
+   * @param encodedProjectDir - Encoded project directory name.
+   * @param sessionId - Full or partial session UUID.
+   * @returns All messages from the session (unscored).
+   */
   async getSessionMessages(
     encodedProjectDir: string,
     sessionId: string,
@@ -1883,6 +1969,15 @@ export class HistorySearchEngine {
     return practices.slice(0, 5);
   }
 
+  // ── Plan search ─────────────────────────────────────────────────────
+
+  /**
+   * Search plan files in `~/.claude/plans/` for matching content.
+   *
+   * @param query - Free-text search query.
+   * @param limit - Maximum plan results (default 10).
+   * @returns Matched plans with relevance scores and section info.
+   */
   async searchPlans(query: string, limit: number = 10): Promise<PlanResult[]> {
     try {
       const planFiles = await findPlanFiles();
@@ -2008,6 +2103,15 @@ export class HistorySearchEngine {
     return score;
   }
 
+  // ── Config / memory / task search ───────────────────────────────────
+
+  /**
+   * Search Claude configuration markdown files (rules, skills, agents, plans).
+   *
+   * @param query - Free-text search query.
+   * @param limit - Maximum results (default 10).
+   * @returns Search results from `~/.claude/` config files.
+   */
   async searchConfig(query: string, limit: number = 10): Promise<SearchResult> {
     const startTime = Date.now();
 
@@ -2085,6 +2189,13 @@ export class HistorySearchEngine {
     }
   }
 
+  /**
+   * Search project memory markdown files.
+   *
+   * @param query - Free-text search query.
+   * @param limit - Maximum results (default 10).
+   * @returns Search results from memory markdown files.
+   */
   async searchMemories(query: string, limit: number = 10): Promise<SearchResult> {
     const startTime = Date.now();
 
@@ -2174,6 +2285,13 @@ export class HistorySearchEngine {
     }
   }
 
+  /**
+   * Search task JSON files in `~/.claude/tasks/`.
+   *
+   * @param query - Free-text search query.
+   * @param limit - Maximum results (default 10).
+   * @returns Search results from task files.
+   */
   async searchTasks(query: string, limit: number = 10): Promise<SearchResult> {
     const startTime = Date.now();
 
