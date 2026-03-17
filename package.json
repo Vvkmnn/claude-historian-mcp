@@ -1,6 +1,6 @@
 {
   "name": "claude-historian-mcp",
-  "version": "1.0.5",
+  "version": "1.0.6-beta.0",
   "description": "An MCP server for conversation history search and retrieval in Claude Code",
   "type": "module",
   "main": "./dist/index.js",
