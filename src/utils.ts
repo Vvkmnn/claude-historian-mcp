@@ -1,27 +1,52 @@
+/**
+ * Filesystem utilities for discovering and reading Claude Code data.
+ *
+ * Provides path resolution, directory listing (with TTL caching),
+ * message content extraction, and relevance scoring. All functions
+ * operate on the `~/.claude/` directory tree.
+ */
 import { readdir, stat, access, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { constants } from 'fs';
+
 import { ClaudeMessage, MessageContentBlock } from './types.js';
 
-// Directory listing caches — MCP server is long-lived, 30s TTL avoids
-// ~6,700 stat calls per query while staying fresh enough for search.
+// ── Caching ────────────────────────────────────────────────────────
+
+/**
+ * Directory listing caches — MCP server is long-lived, 30s TTL avoids
+ * ~6,700 stat calls per query while staying fresh enough for search.
+ */
 const DIR_CACHE_TTL = 30_000;
 const projectDirCache: { dirs: string[]; ts: number } = { dirs: [], ts: 0 };
 const jsonlFileCache = new Map<string, { files: string[]; ts: number }>();
 
+// ── Path resolution ────────────────────────────────────────────────
+
+/** Return the Claude config base path, respecting CLAUDE_CONFIG_DIR env var. */
+export function getClaudeBasePath(): string {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+}
+
+/** Return the absolute path to `~/.claude/projects/`. */
 export function getClaudeProjectsPath(): string {
-  return join(homedir(), '.claude', 'projects');
+  return join(getClaudeBasePath(), 'projects');
 }
 
+/** Return the absolute path to `~/.claude/plans/`. */
 export function getClaudePlansPath(): string {
-  return join(homedir(), '.claude', 'plans');
+  return join(getClaudeBasePath(), 'plans');
 }
 
+/** Return the absolute path to `~/.claude/tasks/`. */
 export function getClaudeTasksPath(): string {
-  return join(homedir(), '.claude', 'tasks');
+  return join(getClaudeBasePath(), 'tasks');
 }
 
+// ── File discovery ─────────────────────────────────────────────────
+
+/** List all `.md` plan files in `~/.claude/plans/`. */
 export async function findPlanFiles(): Promise<string[]> {
   try {
     const plansPath = getClaudePlansPath();
@@ -33,6 +58,12 @@ export async function findPlanFiles(): Promise<string[]> {
   }
 }
 
+/**
+ * Recursively walk a directory and return all file paths.
+ *
+ * @param dir - Directory to walk.
+ * @returns Flat array of absolute file paths.
+ */
 export async function walkDirectory(dir: string): Promise<string[]> {
   const results: string[] = [];
 
@@ -61,10 +92,17 @@ export async function walkDirectory(dir: string): Promise<string[]> {
   return results;
 }
 
+/**
+ * Discover all Claude configuration markdown files (rules, skills, agents, plans).
+ *
+ * Searches both global `~/.claude/` and per-project `.claude/` directories.
+ *
+ * @returns Array of `{ path, category }` tuples.
+ */
 export async function findClaudeMarkdownFiles(): Promise<{ path: string; category: string }[]> {
   try {
     const results: { path: string; category: string }[] = [];
-    const claudeDir = join(homedir(), '.claude');
+    const claudeDir = getClaudeBasePath();
 
     // Search global ~/.claude/ directory
     const globalCategories = ['rules', 'skills', 'agents', 'plans'];
@@ -137,6 +175,7 @@ export async function findClaudeMarkdownFiles(): Promise<{ path: string; categor
   }
 }
 
+/** List all `.json` task files under `~/.claude/tasks/`. */
 export async function findTaskFiles(): Promise<string[]> {
   try {
     const tasksPath = getClaudeTasksPath();
@@ -148,16 +187,40 @@ export async function findTaskFiles(): Promise<string[]> {
   }
 }
 
+// ── Path encoding ──────────────────────────────────────────────────
+
+/**
+ * Decode a Claude project directory name back to a filesystem path.
+ *
+ * @remarks Claude encodes paths by replacing `/` with `-`.
+ * @param encodedPath - Encoded directory name (e.g. "-Users-v-Projects-foo").
+ * @returns Decoded filesystem path (e.g. "/Users/v/Projects/foo").
+ */
 export function decodeProjectPath(encodedPath: string): string {
   // Claude encodes paths by replacing '/' with '-'
   return encodedPath.replace(/-/g, '/');
 }
 
+/**
+ * Encode a filesystem path to Claude's project directory naming convention.
+ *
+ * @param path - Absolute filesystem path.
+ * @returns Encoded directory name with `/` replaced by `-`.
+ */
 export function encodeProjectPath(path: string): string {
   // Encode path for Claude projects directory naming
   return path.replace(/\//g, '-');
 }
 
+// ── Directory discovery ────────────────────────────────────────────
+
+/**
+ * List all project directories under `~/.claude/projects/`, sorted by mtime.
+ *
+ * Results are cached for 30 seconds to avoid redundant stat calls.
+ *
+ * @returns Encoded project directory names (most recently modified first).
+ */
 export async function findProjectDirectories(): Promise<string[]> {
   const now = Date.now();
   if (projectDirCache.dirs.length > 0 && now - projectDirCache.ts < DIR_CACHE_TTL) {
@@ -194,6 +257,12 @@ export async function findProjectDirectories(): Promise<string[]> {
   }
 }
 
+/**
+ * List JSONL session files in a project directory, sorted by mtime.
+ *
+ * @param projectDir - Encoded project directory name.
+ * @returns JSONL filenames (most recently modified first).
+ */
 export async function findJsonlFiles(projectDir: string): Promise<string[]> {
   const now = Date.now();
   const cached = jsonlFileCache.get(projectDir);
@@ -227,6 +296,17 @@ export async function findJsonlFiles(projectDir: string): Promise<string[]> {
   }
 }
 
+// ── Message extraction ─────────────────────────────────────────────
+
+/**
+ * Extract searchable text content from a raw Claude message.
+ *
+ * Handles string content, text blocks, tool_use blocks (extracting
+ * high-value fields like file paths and commands), and tool_result blocks.
+ *
+ * @param message - Raw message object with optional `content` field.
+ * @returns Concatenated text content, or empty string if none.
+ */
 export function extractContentFromMessage(message: {
   content?: string | MessageContentBlock[];
 }): string {
@@ -274,6 +354,8 @@ export function extractContentFromMessage(message: {
   return '';
 }
 
+// ── Relevance scoring ──────────────────────────────────────────────
+
 import {
   EXACT_MATCH_SCORE,
   SUPPORTING_TERM_SCORE,
@@ -296,6 +378,20 @@ import {
  * for TypeScript, JavaScript, GraphQL, MongoDB, etc. v1.0.5 fixed to simple
  * case-insensitive matching. v1.0.6 replaced with Set-based lookup. */
 
+/**
+ * Score a message's relevance to a search query.
+ *
+ * Uses multi-signal scoring: core tech term matching, supporting term
+ * boosts, exact phrase bonus, tool/file/project context, and a soft
+ * penalty for structural config content.
+ *
+ * @param message - Raw Claude message to score.
+ * @param query - User's search query.
+ * @param projectPath - Optional project path for context matching.
+ * @param preExtractedContent - Pre-extracted content string (avoids re-extraction).
+ * @param preComputedQueryWords - Pre-split query words (avoids re-splitting).
+ * @returns Additive relevance score (higher is more relevant).
+ */
 export function calculateRelevanceScore(
   message: ClaudeMessage,
   query: string,
@@ -452,10 +548,19 @@ function isStructuralContent(lowerContent: string): boolean {
   return false;
 }
 
+// ── Timestamp utilities ────────────────────────────────────────────
+
+/** Normalize a timestamp string to ISO 8601 format. */
 export function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toISOString();
 }
 
+/**
+ * Create a timestamp filter predicate for a named time range.
+ *
+ * @param timeframe - "today", "yesterday", "week", "month", or undefined (no filter).
+ * @returns Predicate that returns `true` for timestamps within the range.
+ */
 export function getTimeRangeFilter(timeframe?: string): (timestamp: string) => boolean {
   if (!timeframe) return () => true;
 
@@ -542,7 +647,14 @@ export async function getClaudeDesktopIndexedDBPath(): Promise<string | null> {
 }
 */
 
-// Git worktree detection and parent project discovery
+// ── Git worktree detection ─────────────────────────────────────────
+
+/**
+ * Check whether a project path is a git worktree (`.git` is a file, not a directory).
+ *
+ * @param projectPath - Encoded project directory name.
+ * @returns `true` if the project is a worktree checkout.
+ */
 export async function isGitWorktree(projectPath: string): Promise<boolean> {
   try {
     const decodedPath = decodeProjectPath(projectPath);
@@ -556,6 +668,15 @@ export async function isGitWorktree(projectPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Resolve a worktree's parent project directory.
+ *
+ * Reads the `.git` file to extract the `gitdir:` path, then derives
+ * the parent project's encoded directory name.
+ *
+ * @param projectPath - Encoded worktree project directory name.
+ * @returns Encoded parent project directory name, or `null` if not a worktree.
+ */
 export async function getParentProjectFromWorktree(projectPath: string): Promise<string | null> {
   try {
     const decodedPath = decodeProjectPath(projectPath);
@@ -580,6 +701,13 @@ export async function getParentProjectFromWorktree(projectPath: string): Promise
   }
 }
 
+/**
+ * Expand project directory list with parent projects for worktree checkouts.
+ *
+ * @remarks Temporarily disabled for testing — returns input unchanged.
+ * @param projectDirs - Encoded project directory names.
+ * @returns Same array (expansion logic commented out).
+ */
 export function expandWorktreeProjects(projectDirs: string[]): Promise<string[]> {
   // TEMPORARILY DISABLED FOR TESTING — async logic commented out below
   return Promise.resolve(projectDirs);
