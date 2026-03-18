@@ -1000,6 +1000,8 @@ export class BeautifulFormatter {
           name: plan.name,
           ts: this.formatTimestamp(plan.timestamp),
           title: plan.title,
+          ...(plan.sessionId ? { session: plan.sessionId } : {}),
+          ...(plan.project ? { project: plan.project } : {}),
           goal: this.extractPlanGoal(plan.content),
           key_insight: isSummary ? null : this.extractKeyInsight(plan.content),
           sections: isSummary ? plan.sections.slice(0, 3) : plan.sections.slice(0, 6),

@@ -321,19 +321,11 @@ export function extractContentFromMessage(message: {
         if (item.type === 'tool_use') {
           const parts = [`[Tool: ${item.name}]`];
           if (item.input) {
-            // Extract high-value fields: file paths, commands, descriptions, queries
-            for (const key of [
-              'file_path',
-              'command',
-              'description',
-              'pattern',
-              'query',
-              'prompt',
-              'path',
-            ]) {
-              const val = item.input[key];
+            // Iterate all string values — old hardcoded list of 7 fields missed
+            // new_string, old_string, content, body, glob, url, regex, etc.
+            for (const val of Object.values(item.input)) {
               if (typeof val === 'string') {
-                parts.push(val.slice(0, 200));
+                parts.push(val.slice(0, 500));
               }
             }
           }
@@ -341,7 +333,17 @@ export function extractContentFromMessage(message: {
         }
         if (item.type === 'tool_result') {
           if (typeof item.content === 'string') {
-            return `[Tool Result] ${item.content.slice(0, 300)}`;
+            return `[Tool Result] ${item.content.slice(0, 1000)}`;
+          }
+          // Array tool_results contain {type:"text", text:"..."} blocks
+          if (Array.isArray(item.content)) {
+            return item.content
+              .map((block: MessageContentBlock) => {
+                if (block.type === 'text') return block.text ?? '';
+                return '';
+              })
+              .join(' ')
+              .slice(0, 1000);
           }
           return '[Tool Result]';
         }
