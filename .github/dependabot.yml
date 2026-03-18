@@ -4,9 +4,31 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
     open-pull-requests-limit: 10
     reviewers:
       - "Vvkmnn"
     commit-message:
       prefix: "chore"
       include: "scope"
+    labels:
+      - "dependencies"
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
+      major-updates:
+        update-types:
+          - "major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-patch-minor:
+        update-types:
+          - "patch"
+          - "minor"
