@@ -226,7 +226,6 @@ export class HistorySearchEngine {
         query,
         analysis,
         timeFilter,
-        limit * 8, // Gather 8x for comprehensive coverage — scoring phase handles ranking
       );
 
       // Project-name boosting: if any query term matches a project directory name,
@@ -293,42 +292,25 @@ export class HistorySearchEngine {
     query: string,
     analysis: QueryAnalysis,
     timeFilter: ((timestamp: string) => boolean) | undefined,
-    targetCount: number,
   ): Promise<CompactMessage[]> {
-    const candidates: CompactMessage[] = [];
-    const perProject = Math.max(20, Math.ceil(targetCount / projectDirs.length));
-
     // All projects in one Promise.allSettled — libuv thread pool (4 threads)
-    // already throttles I/O. Batching added unnecessary synchronization points
-    // (slowest project in each batch gated the entire round).
-    const BATCH_SIZE = projectDirs.length;
+    // already throttles I/O. No batching, no caps, no early termination.
+    // Each project runs processProjectFocused in parallel (which itself
+    // parallelizes across all JSONL files within the project).
+    const projectResults = await Promise.allSettled(
+      projectDirs.map((projectDir) =>
+        this.processProjectFocused(projectDir, query, analysis, timeFilter),
+      ),
+    );
 
-    for (let i = 0; i < projectDirs.length; i += BATCH_SIZE) {
-      const batch = projectDirs.slice(i, i + BATCH_SIZE);
-      const batchResults = await Promise.allSettled(
-        batch.map(async (projectDir) => {
-          const dirCandidates = await this.processProjectFocused(
-            projectDir,
-            query,
-            analysis,
-            timeFilter,
-            perProject,
-          );
-          return dirCandidates;
-        }),
-      );
-
-      for (const result of batchResults) {
-        if (result.status === 'fulfilled') {
-          const dirMessages = result.value.filter((msg) =>
-            this.isHighlyRelevant(msg, query, analysis),
-          );
-          candidates.push(...dirMessages);
-        }
+    const candidates: CompactMessage[] = [];
+    for (const result of projectResults) {
+      if (result.status === 'fulfilled') {
+        const dirMessages = result.value.filter((msg) =>
+          this.isHighlyRelevant(msg, query, analysis),
+        );
+        candidates.push(...dirMessages);
       }
-
-      // No early termination — recall requires scanning all projects.
-      // The scoring phase handles ranking from the full candidate set.
     }
 
     return candidates;
@@ -337,35 +319,32 @@ export class HistorySearchEngine {
   private async processProjectFocused(
     projectDir: string,
     query: string,
-    analysis: QueryAnalysis,
+    _analysis: QueryAnalysis,
     timeFilter: ((timestamp: string) => boolean) | undefined,
-    targetPerProject: number,
   ): Promise<CompactMessage[]> {
-    const messages: CompactMessage[] = [];
-
     try {
       const jsonlFiles = await findJsonlFiles(projectDir);
 
-      // Sequential with per-file early termination.
-      // Files are sorted by mtime (most recent first) so results cluster in first 1-3 files.
-      // Batching (Promise.allSettled) was a regression: forced reading 5+ files minimum,
-      // destroying early termination which is the core perf advantage.
-      const perFileSlice = Math.ceil(targetPerProject / jsonlFiles.length);
+      // All files in parallel — no sequential loop, no break, no cap.
+      // libuv thread pool (4 threads) naturally throttles I/O. Parser
+      // pre-filters eliminate 80-95% of data before objects are created.
+      // Same pattern as findFileContext (line 945).
+      const fileResults = await Promise.allSettled(
+        jsonlFiles.map((file) => this.processJsonlFile(projectDir, file, query, timeFilter)),
+      );
 
-      for (const file of jsonlFiles) {
-        const fileMessages = await this.processJsonlFile(projectDir, file, query, timeFilter);
-        const relevant = fileMessages
-          .filter((msg) => (msg.relevanceScore || 0) >= 0.5)
-          .slice(0, perFileSlice);
-
-        messages.push(...relevant);
-        if (messages.length >= targetPerProject) break;
+      const messages: CompactMessage[] = [];
+      for (const result of fileResults) {
+        if (result.status === 'fulfilled') {
+          const relevant = result.value.filter((msg) => (msg.relevanceScore || 0) >= 0.5);
+          messages.push(...relevant);
+        }
       }
+      return messages;
     } catch (error) {
       console.error(`Focused processing error for ${projectDir}:`, error);
+      return [];
     }
-
-    return messages;
   }
 
   private isHighlyRelevant(
@@ -2020,10 +1999,31 @@ export class HistorySearchEngine {
       }
 
       // Filter by relevance and sort
-      return plans
+      const ranked = plans
         .filter((p) => p.relevanceScore > 0)
         .sort((a, b) => b.relevanceScore - a.relevanceScore)
         .slice(0, limit);
+
+      // Link plans to sessions — fully parallel via findFileContext.
+      // Each plan's filepath is searched across all JSONL session files
+      // to find which session created/modified it.
+      await Promise.allSettled(
+        ranked.map(async (plan) => {
+          try {
+            const fileCtxs = await this.findFileContext(plan.filepath, 1);
+            if (fileCtxs.length > 0 && fileCtxs[0].relatedMessages.length > 0) {
+              const msg = fileCtxs[0].relatedMessages[0];
+              plan.sessionId = msg.sessionId;
+              plan.sessionSlug = msg.sessionSlug;
+              plan.project = msg.projectPath ?? undefined;
+            }
+          } catch {
+            // Plan created outside tracked sessions — no link available
+          }
+        }),
+      );
+
+      return ranked;
     } catch (error) {
       console.error('Plan search error:', error);
       return [];

@@ -180,6 +180,11 @@ export interface PlanResult {
   filesMentioned: string[];
   timestamp: string;
   relevanceScore: number;
+  /** Session that created/modified this plan (via findFileContext). */
+  sessionId?: string;
+  sessionSlug?: string;
+  /** Project path where this plan was referenced. */
+  project?: string;
 }
 
 /** Wrapper returned by the plan search formatter. */
