@@ -156,6 +156,25 @@ export interface ToolPattern {
   intelligentInsights?: string[];
 }
 
+// ── Transcript types ──────────────────────────────────────────────
+
+/** A single entry in a conversation transcript (text only, no tool calls). */
+export interface TranscriptEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+}
+
+/** Full transcript result for a session. */
+export interface TranscriptResult {
+  session_id: string;
+  project_path: string | null;
+  message_count: number;
+  start_time: string | null;
+  end_time: string | null;
+  messages: TranscriptEntry[];
+}
+
 // ── Session / plan types ───────────────────────────────────────────
 
 /** Minimal session metadata tracked during JSONL parsing. */
