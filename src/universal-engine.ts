@@ -8,17 +8,25 @@
  * file for potential future reuse.
  */
 import { HistorySearchEngine } from './search.js';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+import { readFile, stat } from 'fs/promises';
+import { join } from 'path';
+
 import {
   SearchResult,
   FileContext,
   ErrorSolution,
   CompactMessage,
+  ClaudeMessage,
   PlanResult,
   SessionInfo,
   ToolPattern,
   CompactSummaryData,
+  TranscriptEntry,
+  TranscriptResult,
 } from './types.js';
-import { findProjectDirectories } from './utils.js';
+import { findProjectDirectories, getClaudeProjectsPath } from './utils.js';
 
 /* DEAD: Desktop imports — claudeDesktopAvailable hardcoded false (issue #70)
 import {
@@ -373,6 +381,150 @@ export class UniversalHistorySearchEngine {
       source: 'claude-code',
       results: plans,
       enhanced: false,
+    };
+  }
+
+  // ── Transcript extraction ──────────────────────────────────────────
+
+  /**
+   * Extract a clean conversation transcript for a specific session.
+   *
+   * Returns only user and assistant text messages — no tool_use, tool_result,
+   * thinking blocks, or system content. Designed for providing accurate
+   * conversation context to sub-agents.
+   *
+   * @param sessionId - Session UUID, short prefix, or "latest".
+   * @returns Clean transcript with role, text, and timestamp per message.
+   */
+  async getSessionTranscript(sessionId: string): Promise<TranscriptResult> {
+    await this.initialize();
+
+    const emptyResult: TranscriptResult = {
+      session_id: sessionId,
+      project_path: null,
+      message_count: 0,
+      start_time: null,
+      end_time: null,
+      messages: [],
+    };
+
+    // Resolve "latest" keyword
+    let resolvedSessionId = sessionId;
+    if (sessionId.toLowerCase() === 'latest') {
+      const recent = await this.claudeCodeEngine.getRecentSessions(1);
+      if (recent.length > 0) {
+        resolvedSessionId = recent[0].session_id;
+      } else {
+        return emptyResult;
+      }
+    }
+
+    // Find the session JSONL file across all project directories
+    const projectDirs = await findProjectDirectories();
+    let foundFilePath: string | null = null;
+    let foundProjectDir = '';
+
+    for (const projectDir of projectDirs) {
+      const projectsPath = getClaudeProjectsPath();
+
+      // Try exact match first
+      const exactPath = join(projectsPath, projectDir, `${resolvedSessionId}.jsonl`);
+      try {
+        await stat(exactPath);
+        foundFilePath = exactPath;
+        foundProjectDir = projectDir;
+        break;
+      } catch {
+        // Not found, try prefix match
+      }
+
+      // Prefix search
+      try {
+        const { readdir } = await import('fs/promises');
+        const files = await readdir(join(projectsPath, projectDir));
+        const match = files.find((f) => f.startsWith(resolvedSessionId) && f.endsWith('.jsonl'));
+        if (match) {
+          foundFilePath = join(projectsPath, projectDir, match);
+          foundProjectDir = projectDir;
+          break;
+        }
+      } catch {
+        // Directory not readable, continue
+      }
+    }
+
+    if (!foundFilePath) {
+      return { ...emptyResult, session_id: resolvedSessionId };
+    }
+
+    // Parse the JSONL file, extracting only user/assistant text content
+    const transcript: TranscriptEntry[] = [];
+    const SMALL_FILE_THRESHOLD = 400_000;
+
+    const processLine = (line: string): void => {
+      if (!line.trim()) return;
+      try {
+        const msg = JSON.parse(line) as ClaudeMessage;
+
+        // Only include user and assistant messages
+        if (msg.type !== 'user' && msg.type !== 'assistant') return;
+        if (!msg.message?.content) return;
+
+        // Extract only text content (no tool_use, tool_result, thinking)
+        let text = '';
+        if (typeof msg.message.content === 'string') {
+          text = msg.message.content;
+        } else if (Array.isArray(msg.message.content)) {
+          text = (msg.message.content as Array<{ type: string; text?: string }>)
+            .filter((block) => block.type === 'text')
+            .map((block) => block.text ?? '')
+            .join('\n')
+            .trim();
+        }
+
+        // Skip empty messages (e.g. assistant messages that were only tool calls)
+        if (!text) return;
+
+        // Skip system-reminder content injected into user messages
+        if (msg.type === 'user' && text.startsWith('<tool_result')) return;
+
+        transcript.push({
+          role: msg.type,
+          text,
+          timestamp: msg.timestamp,
+        });
+      } catch {
+        // Skip malformed lines
+      }
+    };
+
+    try {
+      const fileStats = await stat(foundFilePath);
+      if (fileStats.size < SMALL_FILE_THRESHOLD) {
+        const content = await readFile(foundFilePath, 'utf-8');
+        for (const line of content.split('\n')) {
+          processLine(line);
+        }
+      } else {
+        const fileStream = createReadStream(foundFilePath, { encoding: 'utf8' });
+        const rl = createInterface({ input: fileStream, crlfDelay: Infinity });
+        for await (const line of rl) {
+          processLine(line);
+        }
+      }
+    } catch {
+      return { ...emptyResult, session_id: resolvedSessionId };
+    }
+
+    const decodedPath = foundProjectDir.replace(/-/g, '/');
+
+    return {
+      session_id: resolvedSessionId,
+      project_path: decodedPath,
+      message_count: transcript.length,
+      start_time: transcript[0]?.timestamp ?? null,
+      end_time: transcript[transcript.length - 1]?.timestamp ?? null,
+      messages: transcript,
     };
   }
 

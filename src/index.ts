@@ -201,6 +201,53 @@ class ClaudeHistorianServer {
         }
       },
     );
+
+    this.server.registerTool(
+      'transcript',
+      {
+        title: 'Get Session Transcript',
+        description:
+          'Get a clean conversation transcript for a session — only human/assistant text, no tool calls or system content. Ideal for providing accurate conversation context to sub-agents.',
+        inputSchema: {
+          session_id: z
+            .string()
+            .optional()
+            .default('latest')
+            .describe(
+              'Session ID, short prefix, or "latest" (default). Tip: pass process.env.CLAUDE_SESSION_ID when available.',
+            ),
+          format: z
+            .enum(['text', 'json'])
+            .optional()
+            .default('text')
+            .describe('Output format: "text" for readable transcript, "json" for structured data'),
+          max_messages: z
+            .number()
+            .optional()
+            .describe('Maximum number of messages to return (returns all if omitted)'),
+        },
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+        },
+      },
+      async (args) => {
+        try {
+          return await this.handleTranscript(args as Record<string, unknown>);
+        } catch (error) {
+          console.error('Tool execution error:', error);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error executing transcript: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
   }
 
   private async handleSearch(
@@ -463,6 +510,49 @@ class ClaudeHistorianServer {
     const text = this.formatter.formatCompactSummary([result.results], sessionId);
 
     return { content: [{ type: 'text', text }] };
+  }
+
+  private async handleTranscript(
+    args: Record<string, unknown>,
+  ): Promise<{ content: { type: 'text'; text: string }[] }> {
+    const sessionId = (args.session_id as string) || 'latest';
+    const format = (args.format as string) || 'text';
+    const maxMessages = args.max_messages as number | undefined;
+
+    const result = await this.universalEngine.getSessionTranscript(sessionId);
+
+    if (result.message_count === 0) {
+      const hint =
+        sessionId === 'latest'
+          ? 'No sessions found.'
+          : sessionId.length < 36
+            ? `No session matching prefix "${sessionId}".`
+            : `No session found with ID "${sessionId}".`;
+      return { content: [{ type: 'text', text: JSON.stringify({ error: hint }) }] };
+    }
+
+    const messages = maxMessages ? result.messages.slice(0, maxMessages) : result.messages;
+
+    if (format === 'json') {
+      const output = { ...result, messages };
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+    }
+
+    // Text format: readable transcript
+    const lines: string[] = [
+      `📜 Transcript: ${result.session_id} (${messages.length} messages)`,
+      `Project: ${result.project_path || 'unknown'}`,
+      '',
+    ];
+
+    for (const msg of messages) {
+      const role = msg.role === 'user' ? '👤 User' : '🤖 Assistant';
+      lines.push(`--- ${role} [${msg.timestamp}] ---`);
+      lines.push(msg.text);
+      lines.push('');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 
   async run(): Promise<void> {
