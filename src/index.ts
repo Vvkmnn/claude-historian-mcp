@@ -224,7 +224,15 @@ class ClaudeHistorianServer {
           max_messages: z
             .number()
             .optional()
-            .describe('Maximum number of messages to return (returns all if omitted)'),
+            .describe(
+              'Maximum number of messages from the start of the conversation (returns all if omitted)',
+            ),
+          latest: z
+            .number()
+            .optional()
+            .describe(
+              'Return only the N most recent messages. Takes priority over max_messages. E.g. latest=50 returns the last 50 messages.',
+            ),
         },
         annotations: {
           readOnlyHint: true,
@@ -518,6 +526,7 @@ class ClaudeHistorianServer {
     const sessionId = (args.session_id as string) || 'latest';
     const format = (args.format as string) || 'text';
     const maxMessages = args.max_messages as number | undefined;
+    const latest = args.latest as number | undefined;
 
     const result = await this.universalEngine.getSessionTranscript(sessionId);
 
@@ -531,7 +540,13 @@ class ClaudeHistorianServer {
       return { content: [{ type: 'text', text: JSON.stringify({ error: hint }) }] };
     }
 
-    const messages = maxMessages ? result.messages.slice(0, maxMessages) : result.messages;
+    // latest takes priority: slice from end. max_messages slices from start.
+    let messages = result.messages;
+    if (latest) {
+      messages = messages.slice(-latest);
+    } else if (maxMessages) {
+      messages = messages.slice(0, maxMessages);
+    }
 
     if (format === 'json') {
       const output = { ...result, messages };
